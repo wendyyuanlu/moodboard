@@ -2658,6 +2658,38 @@ test("hosted campaign pages load full originals without a database and export ve
   } finally { await context.close(); }
 });
 
+test("online campaign previews defer offscreen originals including crops", async ({ page, browser }) => {
+  await ready(page); const bytes = await png(page, 160, 240); await upload(page, ["reference.png"], bytes);
+  const saved = await snapshot(page), original = saved.state.tabs[0].sections[0].items[0];
+  const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+  const sha = crypto.createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+  saved.state.settings.layout = "list";
+  const assets = Array.from({ length: 60 }, (_, index) => [`asset-${index}`, { name: `${index}.png`, width: 160, height: 240,
+    remote: { url: `https://raw.githubusercontent.com/wendyyuanlu/moodboard/${"a".repeat(40)}/images/${sha256}-${index}.png`, sha, mime: "image/png" } }]);
+  saved.state.tabs[0].sections[0].items = assets.map(([assetId], index) => ({ ...original, id: `item-${index}`, assetId,
+    ...(index % 2 ? { crop: { x: 0.1, y: 0.1, width: 0.7, height: 0.7 } } : {}) }));
+  const source = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8")
+    .replace(/(<script id="portable-data" type="application\/json">)[\s\S]*?(<\/script>)/, (_, open, close) => open + JSON.stringify({ format: "moodboard", version: 1, state: saved.state, assets }) + close)
+    .replace(/(<script id="portable-options" type="application\/json">)[\s\S]*?(<\/script>)/, '$1{"memoryOnly":true,"remoteOriginals":true}$2')
+    .replace(/(<script id="cloud-config" type="application\/json">)[\s\S]*?(<\/script>)/, "$1null$2");
+  const context = await browser.newContext({ serviceWorkers: "block", viewport: { width: 390, height: 844 } });
+  try {
+    const requests = new Set();
+    await context.route("**/lazy-campaign.html", route => route.fulfill({ contentType: "text/html", body: source }));
+    await context.route("https://raw.githubusercontent.com/**", route => { requests.add(route.request().url()); return route.fulfill({ contentType: "image/png", body: bytes }); });
+    const campaign = await context.newPage(); await campaign.goto("/lazy-campaign.html");
+    await expect(campaign.locator(".image-card")).toHaveCount(60);
+    await expect.poll(() => requests.size).toBeGreaterThan(0);
+    expect(requests.size).toBeLessThan(15);
+    expect(requests.has(assets[59][1].remote.url)).toBe(false);
+    await campaign.locator(".image-card").last().scrollIntoViewIfNeeded();
+    await expect.poll(() => requests.has(assets[59][1].remote.url)).toBe(true);
+    expect(requests.size).toBeLessThan(30);
+    await campaign.locator(".image-hit").last().click();
+    await expect(campaign.locator("#viewer-image")).toHaveAttribute("src", assets[59][1].remote.url);
+  } finally { await context.close(); }
+});
+
 test("metadata-only originals require the explicit isolated online-page option", async ({ page }) => {
   await ready(page); await upload(page, ["keep.png"], await png(page));
   const before = await snapshot(page), fixture = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");

@@ -71,6 +71,18 @@
   function allItems(data = state) { return sections(data).flatMap((section) => section.items); }
   function findSection(sectionId, data = state) { return sections(data).find((section) => section.id === sectionId); }
   function tabItems() { return activeTab().sections.flatMap((section) => section.items); }
+  const pendingPreviews = new WeakMap();
+  const originalObserver = linkedOriginals ? new IntersectionObserver(entries => {
+    for (const entry of entries) if (entry.isIntersecting) {
+      pendingPreviews.get(entry.target)?.();
+      pendingPreviews.delete(entry.target); originalObserver.unobserve(entry.target);
+    }
+  }, { rootMargin: "600px" }) : null;
+  function previewOriginal(preview, resource, attribute, assetId) {
+    const load = () => resource.setAttribute(attribute, imageURL(assetId));
+    if (!originalObserver) load();
+    else { pendingPreviews.set(preview, load); originalObserver.observe(preview); }
+  }
   function imageURL(assetId) {
     const asset = assets.get(assetId);
     if (!(asset.blob instanceof Blob)) return asset.remote.url;
@@ -412,6 +424,7 @@
     });
   }
   function render() {
+    originalObserver?.disconnect();
     const current = activeTab();
     document.body.dataset.theme = state.settings.theme;
     document.body.classList.toggle("edit-off", !editable);
@@ -554,12 +567,13 @@
       viewport.setAttribute("viewBox", `${rect.x} ${rect.y} ${rect.width} ${rect.height}`);
       viewport.setAttribute("overflow", "hidden");
       const original = svg("image");
-      original.setAttribute("href", imageURL(item.assetId)); original.setAttribute("width", asset.width); original.setAttribute("height", asset.height);
+      previewOriginal(img, original, "href", item.assetId); original.setAttribute("width", asset.width); original.setAttribute("height", asset.height);
       viewport.append(original); img.append(viewport);
       original.addEventListener("error", () => notify(`Could not display the crop of “${item.title}”. Open the original or reset its crop.`), { once: true });
     } else {
-      img = el("img"); img.src = imageURL(item.assetId); img.alt = item.title; img.loading = "lazy"; img.decoding = "async"; img.draggable = false;
+      img = el("img"); img.alt = item.title; img.loading = "lazy"; img.decoding = "async"; img.draggable = false;
       img.width = asset.width; img.height = asset.height;
+      previewOriginal(img, img, "src", item.assetId);
     }
     img.addEventListener("error", () => notify(`Could not display “${item.title}”. ${assets.get(item.assetId)?.blob
       ? "The saved original is still available for export."
