@@ -172,6 +172,9 @@ body.section-sorting .section-drag{cursor:grabbing}
 .header-actions #save-status:has(.auto-sync-link){display:flex;justify-content:flex-end;align-items:center}
 .header-actions .status-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .header-actions .auto-sync-link{flex:0 0 auto;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom}
+.html-file-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:16px 0}
+.html-file-row .guide-heading{flex:1;min-width:0;margin:0}
+.html-file-row .dialog-extra{flex-shrink:0;margin:0}
 .export-choices,.export-summary,.export-choice{grid-column:1/-1}
 .export-choices{max-height:50vh;overflow-y:auto;overscroll-behavior:contain}
 .export-tab{border-bottom:1px solid var(--line)}

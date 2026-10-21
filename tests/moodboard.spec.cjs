@@ -676,7 +676,7 @@ test("portable export works without local storage and failed saves leave the boa
   });
   const memoryPage = await memoryContext.newPage(); await memoryPage.goto("http://127.0.0.1:8085/");
   await expect(memoryPage.locator("#save-status")).toHaveText("Export to keep changes");
-  await expect(memoryPage.locator("#storage-warning")).toContainText("MUST Save portable copy");
+  await expect(memoryPage.locator("#storage-warning")).toContainText("MUST use Download");
   const bytes = await png(memoryPage);
   await memoryPage.locator("#image-files").setInputFiles([file("memory-only.png", bytes)]);
   await expect(memoryPage.locator(".image-card")).toHaveCount(1);
@@ -2568,7 +2568,15 @@ test("page-icon library links every independent HTML without preloading and surv
   await expect(page.locator("#editor-title")).toHaveText("Separate HTML files");
   await expect(page.locator("#editor-fields h3")).toHaveCount(7);
   const links = await page.locator("#editor-fields a").evaluateAll(nodes => nodes.map(node => node.href));
-  expect(links.slice(0, 2)).toEqual(["https://wendyyuanlu.github.io/moodboard/", "https://wendyyuanlu.github.io/moodboard/hanfu-moodboard.html"]);
+  expect(links).toContain("https://wendyyuanlu.github.io/moodboard/");
+  expect(links).toContain("https://wendyyuanlu.github.io/moodboard/hanfu-moodboard.html");
+  expect(links).toContain("https://github.com/wendyyuanlu/moodboard/releases/download/campaign-boards-v1/index.html");
+  await expect(page.locator("#save-portable")).toHaveText("Download");
+  for (const row of await page.locator(".html-file-row").all()) {
+    const heading = await row.locator("h3").boundingBox(), actions = await row.locator(".dialog-extra").boundingBox();
+    expect(actions.x).toBeGreaterThanOrEqual(heading.x + heading.width);
+    expect(Math.abs(heading.y + heading.height / 2 - actions.y - actions.height / 2)).toBeLessThan(2);
+  }
   expect(links.filter(link => link.includes("/campaign-kyoto-"))).toHaveLength(3);
   expect(links.filter(link => link.includes("/campaign-hanashizuku-"))).toHaveLength(2);
   expect(requests).toEqual([]);
@@ -2582,7 +2590,8 @@ test("page-icon library links every independent HTML without preloading and surv
     const portable = await context.newPage(); await portable.goto(pathToFileURL(filename).href);
     await portable.getByRole("button", { name: "Separate HTML files", exact: true }).click();
     await expect(portable.locator("#editor-fields a")).toHaveCount(14);
-    const local = await portable.getByRole("link", { name: "Open saved file", exact: true }).evaluateAll(nodes => nodes.map(node => node.href));
+    await expect(portable.locator("#save-portable")).toHaveText("Download");
+    const local = await portable.locator("a[data-local-file]").evaluateAll(nodes => nodes.map(node => node.href));
     expect(local).toContain(pathToFileURL(path.join(path.dirname(filename), "campaign-kyoto-1.html")).href);
     expect(local).toContain(pathToFileURL(path.join(path.dirname(filename), "campaign-hanashizuku-2.html")).href);
   } finally { await context.close(); }

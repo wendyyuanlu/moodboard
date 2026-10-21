@@ -2045,7 +2045,7 @@
       find("#viewer-source").removeAttribute("href"); find("#viewer-source").hidden = true;
       find("#viewer-locations-list").replaceChildren(); find("#viewer-locations").hidden = true;
       find("#viewer-locations-toggle").hidden = true; find("#viewer-locations-toggle").setAttribute("aria-expanded", "false");
-      find("#save-portable").removeAttribute("disabled"); find("#save-portable").textContent = "↓ Save portable copy";
+      find("#save-portable").removeAttribute("disabled"); find("#save-portable").textContent = "Download";
       find("#save-status").textContent = "Opening your space…";
       html.querySelector("body").classList.remove("edit-off", "dragging");
       for (const node of html.querySelectorAll("[disabled]")) node.removeAttribute("disabled");
@@ -2061,7 +2061,7 @@
       if (!selected) dirty = false;
       notify(selected ? "Selected content exported. Your full board is unchanged." : "Portable HTML saved with all original images. Copy it to your USB. Save a new copy after making more changes.");
     } catch (error) { if (throwErrors) throw error; report(error); }
-    finally { exporting = false; control.textContent = "↓ Save portable copy"; setSaveStatus(); }
+    finally { exporting = false; control.textContent = "Download"; setSaveStatus(); }
   }
   async function exportJSON() {
     if (exporting) { notify("An export is already being prepared. Wait for its download before starting another."); return; }
@@ -2091,24 +2091,27 @@
     const files = [
       ["Main moodboard", "index.html", site],
       ["Hanfu", "hanfu-moodboard.html", site + "hanfu-moodboard.html"],
-      ["Campaign (Kyoto) — 1 of 3", "campaign-kyoto-1.html", downloads + "campaign-kyoto-1.html"],
-      ["Campaign (Kyoto) — 2 of 3", "campaign-kyoto-2.html", downloads + "campaign-kyoto-2.html"],
-      ["Campaign (Kyoto) — 3 of 3", "campaign-kyoto-3.html", downloads + "campaign-kyoto-3.html"],
-      ["Campaign (Hanashizuku) — 1 of 2", "campaign-hanashizuku-1.html", downloads + "campaign-hanashizuku-1.html"],
-      ["Campaign (Hanashizuku) — 2 of 2", "campaign-hanashizuku-2.html", downloads + "campaign-hanashizuku-2.html"]
+      ["Campaign (Kyoto) — 1 of 3", "campaign-kyoto-1.html"],
+      ["Campaign (Kyoto) — 2 of 3", "campaign-kyoto-2.html"],
+      ["Campaign (Kyoto) — 3 of 3", "campaign-kyoto-3.html"],
+      ["Campaign (Hanashizuku) — 1 of 2", "campaign-hanashizuku-1.html"],
+      ["Campaign (Hanashizuku) — 2 of 2", "campaign-hanashizuku-2.html"]
     ];
-    if (location.protocol === "file:") hint("Keep the downloaded files together in one folder. Open saved file uses that exact filename beside this HTML; Online / download needs internet. Your edited copies may have different names.");
+    if (location.protocol === "file:") hint("Keep the downloaded files together in one folder. Open uses that exact filename beside this HTML; Download needs internet. Your edited copies may have different names.");
     for (const [name, filename, url] of files) {
-      $("#editor-fields").append(el("h3", "guide-heading", name));
+      const row = el("div", "html-file-row");
+      row.append(el("h3", "guide-heading", name));
       const actions = el("div", "dialog-extra");
-      const link = (text, href) => {
+      const link = (text, href, local = false) => {
         const anchor = el("a", "button", text);
         anchor.href = href; anchor.target = "_blank"; anchor.rel = "noopener noreferrer";
+        if (local) anchor.dataset.localFile = "true";
         actions.append(anchor);
       };
-      if (location.protocol === "file:") link("Open saved file", filename);
-      link(location.protocol === "file:" ? "Online / download" : filename.startsWith("campaign-") ? "Download HTML" : "Open board", url);
-      $("#editor-fields").append(actions);
+      if (location.protocol === "file:") link("Open", filename, true);
+      else if (url) link("Open", url);
+      link("Download", downloads + filename);
+      row.append(actions); $("#editor-fields").append(row);
     }
   }
   function guide() {
@@ -2120,10 +2123,10 @@
       ["Organize", "Grid and List always show selection checkboxes while editing. On desktop, quickly drag from an image, checkbox, or empty space to select a rectangle; hold Ctrl/Command/Shift to add to the selection. All selects the current tab; the section icon expands selection to every represented section. Hold an image to rearrange it instead; on phones use its dotted grip. Move provides an accessible alternative."],
       ["Crop without losing originals", "Use an image's crop icon. The editor always shows the full original: draw a crop, move its frame, or resize its corners. Keyboard users can focus the frame: arrows move it and Shift+arrows resize in one-percent steps. Reset crop, Cancel, and Save share the bottom bar. Crops only affect the board, never original downloads or the full-image viewer, and are included in backups and portable copies."],
       ["Tabs & sections", "Use the reorder button after the tab plus to drag tabs into order, then Save. Tab and section details have a collapsed Rearrange control below Position, with the edited entry bold. Drag a section's dotted header grip to reorder sections directly; Escape cancels. Handles support Up/Down and Home/End. The collapse-all icon collapses the current tab. Double-click a tab, press F2, or touch and hold it to edit. Long section titles truncate visually; full names stay available in tooltips and editors."],
-      ["Save to computer or USB", "Save portable copy downloads a single HTML file containing the app, every original image, and your organization. Open it on a computer without internet. It is a snapshot: after editing, save a NEW portable copy. The app cannot silently rewrite files on your USB."],
+      ["Save to computer or USB", "Download saves a single HTML file containing the app, every original image, and your organization. Open it on a computer without internet. It is a snapshot: after editing, use Download again to save a NEW copy. The app cannot silently rewrite files on your USB."],
       ["On your phone", "For reliable phone use, open the hosted HTTPS site while online, then use your browser’s Add to Home Screen / Install option and import a JSON backup. Open it once to finish caching before going offline. Mobile Files apps may only preview local HTML rather than run it; portable HTML is not a guaranteed phone installation method."],
       ["GitHub autosave", "The published board is publicly viewable. To upload changes, use Settings and backups → Enable auto-sync with a fine-grained token restricted to the moodboard repository and Contents: Read and write. The token lives only in this open tab and is sent only to GitHub; enable it again after a reload. Changes upload automatically, including removal of an original file when its last placement is deleted. Earlier copies remain in Git history. Conflicts keep your local changes until you resolve them in Settings."],
-      ["Offline & storage", "Original bytes are never resized or compressed. The shared site caches full originals and queues offline changes in this browser. Private browsing may discard storage, so keep backups. Save portable copy embeds ALL originals from ALL tabs and sections, including collapsed sections and the uncropped originals, plus organization and metadata. It needs no internet, GitHub login, or companion files. Portable copies contain no token and do not automatically publish; import their JSON backup on the hosted site to bring edits back. Large collections require substantial memory during export."],
+      ["Offline & storage", "Original bytes are never resized or compressed. The shared site caches full originals and queues offline changes in this browser. Private browsing may discard storage, so keep backups. Download embeds ALL originals from ALL tabs and sections, including collapsed sections and the uncropped originals, plus organization and metadata. It needs no internet, GitHub login, or companion files. Portable copies contain no token and do not automatically publish; import their JSON backup on the hosted site to bring edits back. Large collections require substantial memory during export."],
       ["Selection & editing", "Editing is on by default each time the app opens. Use the pencil beside Masonry/Grid/List to toggle editing. Turning it off protects against accidental changes. Click an image to open the original-resolution viewer. Use arrows or swipe to browse; Actual size allows panning. Copy or Ctrl+C / Command+C copies full originals, source links, notes, filenames and crops. Wait for Copied before pasting into another updated moodboard. Clipboard permissions and size limits vary by browser. The separate Copy to another section button opens the within-board destination dialog."],
       ["Before your flight", "Import or paste your images, save a portable copy AND a JSON backup, then test the app in airplane mode on the device you’ll use. An offline installation is ready only when the status says “Offline ready”."]
     ];
@@ -2426,7 +2429,7 @@
         try { await storageDB(); }
         catch (error) {
           memoryOnly = true; console.error(error);
-          warning("Local autosave is unavailable in this browser/file location. You can still work, but MUST Save portable copy before closing.");
+          warning("Local autosave is unavailable in this browser/file location. You can still work, but MUST use Download before closing.");
         }
       }
       let embedded = null;
