@@ -19,7 +19,7 @@ Original files are committed under `images/`, with the original filename retaine
 
 Offline changes are saved in IndexedDB with a persistent outbox. Reconnect to the internet and connect GitHub to upload them. Another person's newer save produces a visible conflict: export a backup, then use **Merge local and shared boards**, **Load shared version**, or **Replace shared with this device**. Merge preserves both versions and can produce duplicate placements for you to organize. Load/replace actions require confirmation where they would discard edits.
 
-Public pages check for updates while visible; GitHub's raw-file caching can briefly delay a fresh read. A shared board is installed only after **every original image** has loaded and passed its checksum/format checks. A missing original is an error, not a successful partial board. GitHub's API rate limits and 100 MiB individual-file limit apply; failed uploads remain local. Image bytes are never reduced to work around those limits.
+Fresh public visits resolve the latest Git commit through GitHub's API, then load the manifest and all originals from that **same immutable commit**, avoiding stale branch-file caches and mixed versions. Public pages recheck approximately every five minutes while visible (or when returning after a minute); connected editors recheck more frequently. **Retry GitHub save** also refreshes the shared version. A shared board is installed only after **every original image** has loaded and passed its checksum/format checks. A missing original is an error, not a successful partial board. GitHub's anonymous/authenticated API rate limits and 100 MiB individual-file limit apply; failed uploads remain local. Image bytes are never reduced to work around those limits.
 
 ## Start locally
 

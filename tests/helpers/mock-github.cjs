@@ -2,7 +2,7 @@ const crypto = require("node:crypto");
 const gitHash = (bytes) => crypto.createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 function mockGitHub() {
   const blobs = new Map(), trees = new Map(), commits = new Map(), calls = [], history = [];
-  let head = null;
+  let head = null, rawBranchHead;
   const hash = (data) => crypto.createHash("sha1").update(JSON.stringify(data)).digest("hex");
   const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
   function packageAt(commitId = head) {
@@ -16,12 +16,14 @@ function mockGitHub() {
     const parsed = new URL(url);
     if (parsed.hostname === "raw.githubusercontent.com") {
       const path = parsed.pathname.split("/").slice(4).join("/");
-      calls.push({ path: `/raw/${path}`, method: "GET" });
-      const files = head ? trees.get(commits.get(head).tree.sha) : new Map();
+      const commit = parsed.pathname.split("/")[3], target = commit === "board" ? rawBranchHead || head : commit;
+      calls.push({ path: `/raw/${path}`, method: "GET", commit });
+      const files = target ? trees.get(commits.get(target).tree.sha) : new Map();
       return files.has(path) ? new Response(blobs.get(files.get(path))) : reply({}, 404);
     }
-    if (options.headers?.Authorization !== "Bearer test-only-token") return reply({}, 401);
     const path = parsed.pathname.replace("/repos/example/moodboard", "");
+    const auth = options.headers?.Authorization;
+    if (auth ? auth !== "Bearer test-only-token" : options.method !== "GET" || path !== "/git/ref/heads/board") return reply({}, 401);
     const data = options.body ? JSON.parse(options.body) : null;
     calls.push({ path, method: options.method, data });
     if (options.method === "GET") {
@@ -54,6 +56,7 @@ function mockGitHub() {
     throw new Error(`Unexpected GitHub operation: ${options.method} ${path}`);
   }
   return { fetchImpl, calls, blobs, trees, commits, history, packageAt,
+    set rawBranchHead(value) { rawBranchHead = value; },
     get head() { return head; }, get files() { return head ? trees.get(commits.get(head).tree.sha) : new Map(); } };
 }
 module.exports = { mockGitHub, gitHash };

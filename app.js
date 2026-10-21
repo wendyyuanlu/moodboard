@@ -19,7 +19,7 @@
   const cloudEnabled = Boolean(cloudConfig && location.protocol !== "file:" && location.origin === new URL(cloudConfig.site).origin && location.pathname.startsWith(new URL(cloudConfig.site).pathname));
   const github = cloudEnabled ? MoodboardGitHub.createGitHubStore(cloudConfig) : null;
   let cloudInfo = { collection: cloudConfig?.collection, revision: null, dirty: false };
-  let cloudReady = false, cloudSaving = false, cloudConflict = false, cloudError = "", cloudTimer;
+  let cloudReady = false, cloudSaving = false, cloudConflict = false, cloudError = "", cloudTimer, lastCloudRead = 0;
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -1079,6 +1079,7 @@
     try {
       await queue;
       if (!cloudReady || !cloudInfo.dirty) {
+        lastCloudRead = Date.now();
         const record = await cloudRequest("GET", undefined, Boolean(cloudInfo.revision));
         let deferred = false;
         await enqueue(async () => {
@@ -1405,8 +1406,8 @@
         scheduleCloud(0);
         addEventListener("online", () => scheduleCloud(0));
         addEventListener("offline", () => { cloudError = "Offline. Changes are queued on this device."; setSaveStatus(); });
-        document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleCloud(0); });
-        setInterval(() => { if (!document.hidden) scheduleCloud(0); }, 30000);
+        document.addEventListener("visibilitychange", () => { if (!document.hidden && (github.connected || Date.now() - lastCloudRead > 60000)) scheduleCloud(0); });
+        setInterval(() => { if (!document.hidden && (github.connected || Date.now() - lastCloudRead > 300000)) scheduleCloud(0); }, 30000);
       }
     } catch (error) {
       console.error(error);

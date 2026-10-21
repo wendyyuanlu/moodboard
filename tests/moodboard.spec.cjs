@@ -71,7 +71,7 @@ async function sharedHarness(browser, fixture) {
   const html = source.replace(/(<script id="cloud-config" type="application\/json">)[\s\S]*?(<\/script>)/, `$1${JSON.stringify(config)}$2`);
   async function connect(context) {
     await context.route("http://127.0.0.1:8085/", (route) => route.fulfill({ contentType: "text/html", body: html }));
-    await context.route(/^https:\/\/(?:api\.github\.com\/repos\/example\/moodboard|raw\.githubusercontent\.com\/example\/moodboard\/board)(?:\/|$)/, async (route) => {
+    await context.route(/^https:\/\/(?:api\.github\.com\/repos\/example\/moodboard|raw\.githubusercontent\.com\/example\/moodboard\/(?:board|[a-f0-9]{40}))(?:\/|$)/, async (route) => {
       const request = route.request(), headers = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-GitHub-Api-Version", "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS" };
       if (request.method() === "OPTIONS") { await route.fulfill({ status: 204, headers }); return; }
       const response = await remote.fetchImpl(request.url(), { method: request.method(), headers: { Authorization: request.headers().authorization }, body: request.postData() });

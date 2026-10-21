@@ -60,10 +60,11 @@ const MoodboardGitHub = (() => {
   function createGitHubStore({ owner, repo, branch = "board" }, { fetchImpl = fetch, initialToken = "" } = {}) {
     if (![owner, repo, branch].every((value) => /^[a-zA-Z0-9._-]+$/.test(value))) throw new Error("Invalid GitHub repository configuration.");
     const root = `https://api.github.com/repos/${owner}/${repo}`;
-    const raw = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}`;
+    const raw = (commit) => `https://raw.githubusercontent.com/${owner}/${repo}/${commit}`;
     let token = initialToken, operations = Promise.resolve();
     async function api(path, method = "GET", body) {
-      const response = await fetchImpl(`${root}${path}`, {
+      const fresh = path === `/git/ref/heads/${branch}` ? `?fresh=${Date.now()}` : "";
+      const response = await fetchImpl(`${root}${path}${fresh}`, {
         method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(120000), cache: "no-store", credentials: "omit"
       });
@@ -100,11 +101,13 @@ const MoodboardGitHub = (() => {
       let record;
       if (token) record = await loadMeta();
       else {
-        const response = await fetchImpl(`${raw}/board.json?v=${Date.now()}`, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(30000) });
-        if (response.status === 404) return { revision: null, board: null };
+        const ref = await api(`/git/ref/heads/${branch}`);
+        if (!ref) return { revision: null, board: null };
+        const commit = ref.object.sha;
+        const response = await fetchImpl(`${raw(commit)}/board.json`, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(30000) });
         if (!response.ok) throw new SaveError(response.status, `Could not read the shared GitHub board (${response.status}). Your cached images are unchanged.`);
         const bytes = new Uint8Array(await response.arrayBuffer()), manifest = JSON.parse(new TextDecoder().decode(bytes));
-        checkManifest(manifest); record = { revision: await gitHash(bytes), manifest };
+        checkManifest(manifest); record = { revision: await gitHash(bytes), manifest, head: commit };
       }
       if (!record.manifest) return { revision: null, board: null };
       if (record.revision === knownRevision) return null;
@@ -116,7 +119,7 @@ const MoodboardGitHub = (() => {
           if (!image) throw new SaveError(502, "A shared original image is missing. Export your cached backup before reloading.");
           bytes = bytesFromBase64(image.content.replace(/\s/g, ""));
         } else {
-          const response = await fetchImpl(`${raw}/${asset.path}?v=${record.revision}`, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(120000) });
+          const response = await fetchImpl(`${raw(record.head)}/${asset.path}`, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(120000) });
           if (!response.ok) throw new SaveError(response.status, `Could not load the full original “${asset.name}”. The shared board has not been installed.`);
           bytes = new Uint8Array(await response.arrayBuffer());
         }

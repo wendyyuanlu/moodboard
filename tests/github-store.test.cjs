@@ -87,3 +87,30 @@ test("an incomplete or corrupt shared original fails the whole read instead of p
   remote.blobs.set(remote.files.get(imagePath), Buffer.from("not the original"));
   await assert.rejects(storeFor(remote, false).read(), /integrity check/);
 });
+test("public reads bypass stale branch caches and pin every original even if the branch changes mid-read", async () => {
+  const remote = mockGitHub(), writer = storeFor(remote), data = board();
+  const first = await writer.write(null, data);
+  remote.rawBranchHead = remote.head;
+  data.state.revision++;
+  data.state.tabs[0].sections[0].items.push({ ...data.state.tabs[0].sections[0].items[0], id: "second-item", assetId: "second-asset", title: "second.png" });
+  data.assets.push(["second-asset", { ...data.assets[0][1], name: "second.png" }]);
+  const second = await writer.write(first.revision, data), snapshot = remote.head;
+  const reader = createGitHubStore({ owner: "example", repo: "moodboard" }, {
+    fetchImpl: async (url, options) => {
+      if (new URL(url).pathname.endsWith("/git/ref/heads/board")) assert.ok(new URL(url).searchParams.has("fresh"));
+      const response = await remote.fetchImpl(url, options);
+      if (new URL(url).pathname.endsWith("/board.json")) {
+        const empty = structuredClone(data);
+        empty.state.revision++; empty.state.tabs[0].sections[0].items = []; empty.assets = [];
+        await writer.write(second.revision, empty);
+      }
+      return response;
+    }
+  });
+  const record = await reader.read();
+  assert.equal(record.revision, second.revision);
+  assert.deepEqual(record.board, data);
+  assert.notEqual(remote.head, snapshot);
+  assert.equal(remote.files.size, 1);
+  assert.ok(remote.calls.filter((call) => call.path.startsWith("/raw/")).every((call) => call.commit === snapshot));
+});
