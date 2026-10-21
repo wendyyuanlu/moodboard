@@ -2577,8 +2577,10 @@ test("page-icon library links every independent HTML without preloading and surv
     expect(actions.x).toBeGreaterThanOrEqual(heading.x + heading.width);
     expect(Math.abs(heading.y + heading.height / 2 - actions.y - actions.height / 2)).toBeLessThan(2);
   }
-  expect(links.filter(link => link.includes("/campaign-kyoto-"))).toHaveLength(3);
-  expect(links.filter(link => link.includes("/campaign-hanashizuku-"))).toHaveLength(2);
+  expect(links.filter(link => link.includes("releases/download/") && link.includes("/campaign-kyoto-"))).toHaveLength(3);
+  expect(links.filter(link => link.includes("releases/download/") && link.includes("/campaign-hanashizuku-"))).toHaveLength(2);
+  expect(links).toContain("https://wendyyuanlu.github.io/moodboard/campaign-kyoto-1.html");
+  expect(links).toContain("https://wendyyuanlu.github.io/moodboard/campaign-hanashizuku-2.html");
   expect(requests).toEqual([]);
   expect(await snapshot(page)).toEqual(before);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -2595,6 +2597,87 @@ test("page-icon library links every independent HTML without preloading and surv
     expect(local).toContain(pathToFileURL(path.join(path.dirname(filename), "campaign-kyoto-1.html")).href);
     expect(local).toContain(pathToFileURL(path.join(path.dirname(filename), "campaign-hanashizuku-2.html")).href);
   } finally { await context.close(); }
+});
+
+test.describe("isolated online campaign pages", () => {
+test.use({ serviceWorkers: "block" });
+test("hosted campaign pages load full originals without a database and export verified offline HTML", async ({ page, browser }, testInfo) => {
+  await ready(page);
+  const bytes = [await png(page, 150, 240, "#112233"), await png(page, 320, 180, "#445566")];
+  await page.locator("#image-files").setInputFiles(bytes.map((data, index) => file(`original-${index}.png`, data)));
+  await expect(page.locator(".image-card")).toHaveCount(2);
+  const saved = await snapshot(page), fixture = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  saved.state.tabs[0].sections[0].items[0].notes = "Preserve campaign source metadata";
+  const originals = saved.assets.map(([id, asset], index) => {
+    const sha256 = crypto.createHash("sha256").update(bytes[index]).digest("hex");
+    return [id, { name: asset.name, width: asset.width, height: asset.height,
+      remote: { url: `https://raw.githubusercontent.com/wendyyuanlu/moodboard/${"a".repeat(40)}/images/${sha256}-original-${index}.png`,
+        sha: crypto.createHash("sha1").update(`blob ${bytes[index].length}\0`).update(bytes[index]).digest("hex"), mime: "image/png" } }];
+  });
+  const payload = { format: "moodboard", version: 1, state: saved.state, assets: originals };
+  const html = fixture
+    .replace(/(<script id="portable-data" type="application\/json">)[\s\S]*?(<\/script>)/, (_, open, close) => open + JSON.stringify(payload) + close)
+    .replace(/(<script id="portable-options" type="application\/json">)[\s\S]*?(<\/script>)/, '$1{"memoryOnly":true,"remoteOriginals":true}$2')
+    .replace(/(<script id="cloud-config" type="application\/json">)[\s\S]*?(<\/script>)/, "$1null$2");
+  const context = await browser.newContext({ serviceWorkers: "block" });
+  try {
+    await context.addInitScript(() => {
+      window.storageTouches = 0;
+      const forbidden = () => { window.storageTouches++; throw new Error("Hosted campaign touched browser storage"); };
+      Object.defineProperty(window, "indexedDB", { value: { open: forbidden } });
+      Object.defineProperty(window, "BroadcastChannel", { value: forbidden });
+      Object.defineProperty(navigator, "serviceWorker", { value: { register: forbidden } });
+    });
+    await context.route("**/hosted-campaign.html", route => route.fulfill({ contentType: "text/html", body: html }));
+    let corrupt = false, originalReads = 0;
+    for (const [index, [, asset]] of originals.entries()) await context.route(asset.remote.url, route => {
+      originalReads++;
+      return route.fulfill({ contentType: "image/png", body: corrupt ? Buffer.from("corrupt") : bytes[index] });
+    });
+    const hosted = await context.newPage(); await hosted.goto("/hosted-campaign.html");
+    await expect(hosted.locator(".image-card")).toHaveCount(2);
+    await expect(hosted.locator("#storage-warning")).toContainText("not an offline copy");
+    await expect(hosted.locator("#connection-status")).toContainText("Online campaign");
+    await expect.poll(() => hosted.locator(".image-hit img").first().evaluate(image => image.naturalWidth)).toBe(150);
+    const download = hosted.waitForEvent("download"); await hosted.locator("#save-portable").click();
+    const output = testInfo.outputPath("hosted-to-offline.html"); await (await download).saveAs(output);
+    const portable = portablePayload(fs.readFileSync(output, "utf8"));
+    expect(portable.state).toEqual(saved.state);
+    for (const [index, [, asset]] of portable.assets.entries()) expect(Buffer.from(asset.data.split(",")[1], "base64")).toEqual(bytes[index]);
+    expect(originalReads).toBeGreaterThanOrEqual(2);
+    let failedDownloads = 0; hosted.on("download", () => failedDownloads++);
+    corrupt = true; await hosted.locator("#save-portable").click();
+    await expect(hosted.locator("#notice")).toContainText("integrity check");
+    expect(failedDownloads).toBe(0);
+    await context.setOffline(true);
+    const offline = await context.newPage(); await offline.goto(pathToFileURL(output).href);
+    await expect(offline.locator(".image-card")).toHaveCount(2);
+    await expect(offline.locator("#storage-warning")).toContainText("does not use browser autosave");
+    expect(await hosted.evaluate(() => window.storageTouches)).toBe(0);
+    expect(await offline.evaluate(() => window.storageTouches)).toBe(0);
+  } finally { await context.close(); }
+});
+
+test("metadata-only originals require the explicit isolated online-page option", async ({ page }) => {
+  await ready(page); await upload(page, ["keep.png"], await png(page));
+  const before = await snapshot(page), fixture = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const payload = { format: "moodboard", version: 1, state: before.state, assets: before.assets.map(([id, asset]) => [id, {
+    name: asset.name, width: asset.width, height: asset.height,
+    remote: { url: `https://raw.githubusercontent.com/wendyyuanlu/moodboard/${"a".repeat(40)}/images/${"b".repeat(64)}-image.png`, sha: "c".repeat(40), mime: "image/png" }
+  }]) };
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator("#backup-file").setInputFiles({ name: "not-offline.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(payload)) });
+  await expect(page.locator("#notice")).toContainText("unsupported image");
+  expect(await snapshot(page)).toEqual(before);
+  const html = fixture
+    .replace(/(<script id="portable-data" type="application\/json">)[\s\S]*?(<\/script>)/, (_, open, close) => open + JSON.stringify(payload) + close)
+    .replace(/(<script id="portable-options" type="application\/json">)[\s\S]*?(<\/script>)/, '$1{"memoryOnly":true}$2')
+    .replace(/(<script id="cloud-config" type="application\/json">)[\s\S]*?(<\/script>)/, "$1null$2");
+  await page.route("**/missing-online-option.html", route => route.fulfill({ contentType: "text/html", body: html }));
+  await page.goto("/missing-online-option.html");
+  await expect(page.locator("#storage-warning")).toContainText("unsupported image");
+  await expect(page.locator(".image-card")).toHaveCount(0);
+});
 });
 
 test("competing edits to the same notes still protect both versions with a real conflict", async ({ page, browser }) => {

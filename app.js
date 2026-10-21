@@ -17,10 +17,13 @@
   const masonryObserver = new ResizeObserver(() => scheduleMasonry());
   let channel;
   const { supportedImage, sourcePageURL, validCrop, validate } = MoodboardFormat;
-  let isolatedPortable = JSON.parse($("#portable-options").textContent)?.memoryOnly === true;
+  const portableOptions = JSON.parse($("#portable-options").textContent);
+  let isolatedPortable = portableOptions?.memoryOnly === true;
+  const linkedOriginals = isolatedPortable && portableOptions?.remoteOriginals === true;
   const cloudConfig = JSON.parse($("#cloud-config").textContent);
   const cloudEnabled = Boolean(!isolatedPortable && cloudConfig && location.protocol !== "file:" && location.origin === new URL(cloudConfig.site).origin && location.pathname.startsWith(new URL(cloudConfig.site).pathname));
   const github = cloudEnabled ? MoodboardGitHub.createGitHubStore(cloudConfig) : null;
+  const originalReader = linkedOriginals ? MoodboardGitHub.createGitHubStore({ owner: "wendyyuanlu", repo: "moodboard" }) : github;
   const couponCode = "l33thelper";
   let showManageHelp = false;
   let cloudInfo = { collection: cloudConfig?.collection, revision: null, dirty: false, lastSyncedAt: null };
@@ -1546,7 +1549,7 @@
     const key = `${id}:${asset.remote.sha}`;
     if (!originalDownloads.has(key)) {
       originalDownloads.set(key, (async () => {
-        const blob = await github.readOriginal(asset.remote);
+        const blob = await originalReader.readOriginal(asset.remote);
         // Bound decoded-pixel memory on phones while network downloads stay concurrent.
         const decoding = originalDecoder.then(() => readImage(blob));
         originalDecoder = decoding.catch(() => {});
@@ -2091,11 +2094,11 @@
     const files = [
       ["Main moodboard", "index.html", site],
       ["Hanfu", "hanfu-moodboard.html", site + "hanfu-moodboard.html"],
-      ["Campaign (Kyoto) — 1 of 3", "campaign-kyoto-1.html"],
-      ["Campaign (Kyoto) — 2 of 3", "campaign-kyoto-2.html"],
-      ["Campaign (Kyoto) — 3 of 3", "campaign-kyoto-3.html"],
-      ["Campaign (Hanashizuku) — 1 of 2", "campaign-hanashizuku-1.html"],
-      ["Campaign (Hanashizuku) — 2 of 2", "campaign-hanashizuku-2.html"]
+      ["Campaign (Kyoto) — 1 of 3", "campaign-kyoto-1.html", site + "campaign-kyoto-1.html"],
+      ["Campaign (Kyoto) — 2 of 3", "campaign-kyoto-2.html", site + "campaign-kyoto-2.html"],
+      ["Campaign (Kyoto) — 3 of 3", "campaign-kyoto-3.html", site + "campaign-kyoto-3.html"],
+      ["Campaign (Hanashizuku) — 1 of 2", "campaign-hanashizuku-1.html", site + "campaign-hanashizuku-1.html"],
+      ["Campaign (Hanashizuku) — 2 of 2", "campaign-hanashizuku-2.html", site + "campaign-hanashizuku-2.html"]
     ];
     if (location.protocol === "file:") hint("Keep the downloaded files together in one folder. Open uses that exact filename beside this HTML; Download needs internet. Your edited copies may have different names.");
     for (const [name, filename, url] of files) {
@@ -2402,7 +2405,12 @@
     if (pending || exporting || (memoryOnly && dirty)) { event.preventDefault(); event.returnValue = ""; }
   });
   async function setupOffline() {
-    if (isolatedPortable) { $("#connection-status").textContent = "Memory-only portable · no browser image cache · save a new copy after editing"; return; }
+    if (isolatedPortable) {
+      $("#connection-status").textContent = linkedOriginals
+        ? "Online campaign · images load from GitHub · download an offline copy before travel"
+        : "Memory-only portable · no browser image cache · save a new copy after editing";
+      return;
+    }
     const hosted = location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname);
     if (!hosted || !("serviceWorker" in navigator)) {
       $("#connection-status").textContent = location.protocol === "file:" ? "Portable · no network needed" : "Use portable export for offline access";
@@ -2424,7 +2432,9 @@
     try {
       if (isolatedPortable) {
         memoryOnly = true;
-        warning("This separate file does not use browser autosave or GitHub sync. Images and edits stay in memory. Save a new portable copy before closing to keep changes.");
+        warning(linkedOriginals
+          ? "This online campaign page loads full originals from GitHub as you browse; it is not an offline copy. No browser image database or autosave is used. Use the page-icon Download link for a complete offline file, or the header Download to save your edits with all originals."
+          : "This separate file does not use browser autosave or GitHub sync. Images and edits stay in memory. Save a new portable copy before closing to keep changes.");
       } else {
         try { await storageDB(); }
         catch (error) {
@@ -2446,7 +2456,7 @@
           }
           await stagePortable(staging, true);
           validate(payload.state, originals); embedded = { state: payload.state, assets: originals };
-        } else { embedded = await unpackBoard(payload, false, true); cleanupEmbedded = embedded.cleanup; }
+        } else { embedded = await unpackBoard(payload, linkedOriginals, true); cleanupEmbedded = embedded.cleanup; }
         $("#portable-data").textContent = "null";
       }
       try {
