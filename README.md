@@ -68,6 +68,8 @@ PNG, JPEG, GIF, WebP, AVIF, BMP, and ICO raster images are supported when the br
 
 ## Take it offline on a computer or USB
 
+The separate [Hanfu moodboard](./hanfu-moodboard.html) is a self-contained, memory-only HTML file (about 40 MB). It contains Hanfu pose / All and Hanfu sword / Full / Small, with 39 unique original images shared across 79 placements. It does not add those images to the shared board or its IndexedDB cache. Download it for offline use; save a new portable copy after editing.
+
 Use **Export** in the header to create a smaller independent HTML board. Choose individual sections, use each tab's checkbox to select/deselect all its sections, or select everything. The dialog shows selected tab, section, and unique-original counts. Only referenced originals are embedded, once per asset, without resizing or recompression. The export gets a new collection identity, so reopening it cannot substitute autosaved edits from the full board. Your current board and its pending edits are unchanged. **Save portable copy** still includes the entire board.
 
 Downloaded HTML does not need the hosted site's service-worker cache, but opening/editing it still uses browser memory and, when available, IndexedDB. A very large file can exceed those limits too. The original downloaded file keeps its embedded images; edits are not written back into that file automatically. Save a new portable copy after editing, and keep separate backups. Smaller selected exports reduce both file size and per-board resource needs.
