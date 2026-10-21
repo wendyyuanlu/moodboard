@@ -93,7 +93,7 @@ async function sharedHarness(browser, fixture) {
 }
 async function authenticateShared(page) {
   await page.locator("#more").click();
-  await page.getByRole("button", { name: "Connect GitHub", exact: true }).click();
+  await page.getByRole("button", { name: "Enable auto-sync", exact: true }).click();
   await page.locator("[name=githubToken]").fill("test-only-token"); await saveDialog(page);
   await expect(page.locator("#save-status")).toHaveText("Saved to GitHub");
 }
@@ -105,6 +105,29 @@ async function sharedFixture(page) {
     name: asset.name, width: asset.width, height: asset.height, data: `data:image/png;base64,${Buffer.from(asset.bytes).toString("base64")}`
   }]) } };
 }
+
+test("empty sections use a large working paste target and Add section spans the board", async ({ page }) => {
+  await ready(page);
+  await expect(page.locator(".empty-section .section-end")).toHaveCount(1);
+  await expect(page.locator(".empty-section")).toHaveText("+ Add or paste at the end");
+  await expect(page.locator(".board-footnote")).toHaveCount(0);
+  await expect(page.locator("footer")).not.toContainText("Made for your wandering mind.");
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const main = await page.locator("main").evaluate(node => ({ width: node.clientWidth, left: parseFloat(getComputedStyle(node).paddingLeft), right: parseFloat(getComputedStyle(node).paddingRight) }));
+    const add = await page.locator("#bottom-add").boundingBox();
+    expect(add.width).toBeCloseTo(main.width - main.left - main.right, 0);
+    await expect(page.locator(".empty-section .section-end span")).toHaveCSS("font-size", "24px");
+  }
+  await newSection(page, "Paste destination");
+  await page.getByRole("button", { name: "Paste at end of Paste destination", exact: true }).click();
+  await expect(page.locator(".empty-section .section-end.chosen")).toHaveCount(1);
+  await paste(page, ["added-here.png"], await png(page));
+  await expect(page.locator(".section").last().locator(".image-card")).toHaveCount(1);
+  await expect(page.locator(".section").last().locator(".empty-section")).toHaveCount(0);
+  await expect(page.locator(".section").last().locator(".section-end")).toHaveCount(1);
+  await expect(page.locator(".section").first().locator(".image-card")).toHaveCount(0);
+});
 
 test("rapid paste positions, original bytes, full-size viewer and portable offline HTML", async ({ page, browser }, testInfo) => {
   const errors = []; page.on("pageerror", (error) => errors.push(error.message));
@@ -123,7 +146,8 @@ test("rapid paste positions, original bytes, full-size viewer and portable offli
   await paste(page, ["E.png"], buffer);
   await expect.poll(() => titles(page)).toEqual(["A.png", "C.png", "D.png", "E.png", "B.png"]);
   await page.locator("#more").click();
-  await page.getByRole("button", { name: "Append at bottom", exact: true }).click();
+  await page.locator("#cancel-editor").click();
+  await page.getByRole("button", { name: "Paste at end of The little things", exact: true }).click();
   await paste(page, ["F.png"], buffer);
   await expect.poll(() => titles(page)).toEqual(["A.png", "C.png", "D.png", "E.png", "B.png", "F.png"]);
   const saved = await snapshot(page);
@@ -246,8 +270,8 @@ test("bulk copy/move, keyboard copy, image editing and edit-off protection", asy
   await expect(page.locator(".image-card")).toHaveCount(6);
   await page.locator("#select-all").click();
   await expect(page.locator("#selection-count")).toHaveText("6 selected");
-  page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#delete-selected").click();
+  await page.locator("#delete-warning-submit").click();
   await expect(page.locator(".image-card")).toHaveCount(0);
   expect((await snapshot(page)).assets).toHaveLength(0);
 });
@@ -271,7 +295,7 @@ test("mouse hold-drag reorders groups and rectangle selects multiple images", as
   await page.getByRole("button", { name: "Grid", exact: true }).click();
   await expect(page.locator(".images")).toHaveAttribute("data-layout", "grid");
   await expect(page.locator("#save-status")).toHaveText("Saved on this device");
-  await page.locator(".image-card").first().scrollIntoViewIfNeeded();
+  await page.locator(".image-card").first().evaluate(node => node.scrollIntoView({ block: "center" }));
   const cards = await page.locator(".image-card").all();
   const r1 = await cards[0].boundingBox(), r2 = await cards[1].boundingBox();
   await page.mouse.move(r2.x + r2.width + 5, r1.y + 10);
@@ -505,6 +529,8 @@ test("hover-only desktop checkboxes and masonry fill horizontally across the ent
 
 test("pasted source pages appear below images, open separately, and can be corrected", async ({ page, context }) => {
   await ready(page); const buffer = await png(page);
+  await page.locator("#more").click();
+  await page.getByRole("switch", { name: "Show captions", exact: true }).check(); await saveDialog(page);
   const requests = [];
   await context.route("https://provenance.test/**", async (route) => {
     requests.push(route.request().url());
@@ -557,8 +583,7 @@ test("Paste button reads explicit page metadata but rejects unsafe or inferred p
       ]
     } });
   }, [...buffer]);
-  await page.locator("#more").click();
-  await page.getByRole("button", { name: "Paste images", exact: true }).click();
+  await page.locator("#paste-button").evaluate(button => button.click());
   await expect(page.locator(".source-link")).toHaveAttribute("href", "https://example.test/original-page?one=1&two=2");
   await paste(page, ["open-graph.png"], buffer, '<meta property="og:url" content="https://example.test/og-page"><img src="https://example.test/picture.png">');
   await expect(page.locator(".source-link").last()).toHaveAttribute("href", "https://example.test/og-page");
@@ -570,6 +595,8 @@ test("Paste button reads explicit page metadata but rejects unsafe or inferred p
   expect(await page.evaluate(() => window.clipboardExecuted)).toBeUndefined();
   const saved = await snapshot(page);
   expect(saved.state.tabs[0].sections[0].items.slice(2).every((item) => item.sourceUrl === "")).toBe(true);
+  expect(saved.state.tabs[0].sections[0].items[0].sourceImageUrl).toBe("https://example.test/not-the-page.png");
+  expect(saved.state.tabs[0].sections[0].items[1].sourceImageUrl).toBe("https://example.test/picture.png");
 });
 
 test("source URLs survive duplication, JSON transfer, offline portable HTML, and legacy backups", async ({ page, browser }, testInfo) => {
@@ -585,34 +612,43 @@ test("source URLs survive duplication, JSON transfer, offline portable HTML, and
   const offline = await browser.newContext({ offline: true }); const offlinePage = await offline.newPage();
   await offlinePage.goto(pathToFileURL(htmlPath).href);
   await expect(offlinePage.locator(".source-link")).toHaveAttribute("href", url);
+  await offlinePage.getByRole("button", { name: "Open original image: source.png", exact: true }).click();
+  await expect(offlinePage.locator("#viewer-original")).toHaveAttribute("href", "https://example.test/photo.png");
+  await expect(offlinePage.locator("#viewer-download")).toHaveAttribute("href", /^blob:/);
+  await expect(offlinePage.locator("#viewer-stage")).toHaveCSS("padding-left", "0px");
+  await expect(offlinePage.locator("#viewer-stage")).toHaveCSS("padding-right", "0px");
   await offline.close();
   await page.locator("#more").click();
   const jsonEvent = page.waitForEvent("download"); await page.getByRole("button", { name: "Export JSON backup", exact: true }).click();
   const jsonDownload = await jsonEvent, jsonPath = testInfo.outputPath("source-backup.json"); await jsonDownload.saveAs(jsonPath);
   const backup = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
   expect(backup.state.tabs.every((tab) => tab.sections[0].items[0].sourceUrl === url)).toBe(true);
+  expect(backup.state.tabs.every((tab) => tab.sections[0].items[0].sourceImageUrl === "https://example.test/photo.png")).toBe(true);
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#backup-file").setInputFiles(jsonPath);
   await expect(page.locator("#editor")).not.toBeVisible();
   await expect(page.locator(".source-link")).toHaveAttribute("href", url);
-  for (const tab of backup.state.tabs) for (const section of tab.sections) for (const item of section.items) delete item.sourceUrl;
+  for (const tab of backup.state.tabs) for (const section of tab.sections) for (const item of section.items) { delete item.sourceUrl; delete item.sourceImageUrl; }
+  delete backup.state.settings.showCaptions;
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#backup-file").setInputFiles({ name: "legacy.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
   await expect(page.locator(".source-missing")).toHaveCount(0);
   await expect(page.locator(".image-card")).toHaveCount(1);
   const saved = await snapshot(page);
   expect(Buffer.from(saved.assets[0][1].bytes).equals(buffer)).toBe(true);
+  await page.locator("#more").click();
+  await expect(page.getByRole("switch", { name: "Show captions", exact: true })).not.toBeChecked();
 });
 
 test("each card has Move, Delete, Crop, More controls and deletion requires confirmation", async ({ page }) => {
   await ready(page); await upload(page, ["keep.png", "remove.png"], await png(page));
   const tools = page.locator(".image-card").last().locator(".card-tools");
   expect(await tools.locator("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label")))).toEqual(["Drag remove.png", "Delete image remove.png", "Crop image remove.png", "Edit image remove.png"]);
-  page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Delete image remove.png", exact: true }).click();
+  await page.locator("#delete-warning-cancel").click();
   await expect(page.locator(".image-card")).toHaveCount(2);
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete image remove.png", exact: true }).click();
+  await page.locator("#delete-warning-submit").click();
   await expect.poll(() => titles(page)).toEqual(["keep.png"]);
   await page.locator("#edit-toggle").click();
   await expect(page.getByRole("button", { name: "Delete image keep.png", exact: true })).toBeHidden();
@@ -691,7 +727,16 @@ test("selection drag auto-scrolls the page without selecting collapsed images", 
 });
 
 async function setCrop(page, values) {
-  for (const [key, value] of Object.entries(values)) await page.locator(`#editor [name=crop-${key}]`).fill(String(value));
+  await page.getByRole("button", { name: "Reset crop", exact: true }).click();
+  await page.locator(".crop-frame").evaluate((frame, values) => {
+    const resize = (key, count, shiftKey) => {
+      for (let index = 0; index < count; index++) frame.dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey, bubbles: true }));
+    };
+    resize("ArrowLeft", 100 - (values.width ?? 100), true);
+    resize("ArrowUp", 100 - (values.height ?? 100), true);
+    resize("ArrowRight", values.x ?? 0, false);
+    resize("ArrowDown", values.y ?? 0, false);
+  }, values);
 }
 
 test("crop is metadata-only, original editor and viewer retain full image, and reset/cancel work", async ({ page }) => {
@@ -700,6 +745,9 @@ test("crop is metadata-only, original editor and viewer retain full image, and r
   const original = await snapshot(page);
   await page.getByRole("button", { name: "Crop image crop.png", exact: true }).click();
   await expect(page.locator(".crop-stage>img")).toHaveJSProperty("naturalWidth", 600);
+  await expect(page.locator("#editor-title")).toHaveText("Crop image");
+  await expect(page.locator("#editor-fields input, #editor-fields .hint")).toHaveCount(0);
+  await expect(page.locator(".dialog-footer > #crop-reset")).toHaveCount(1);
   await setCrop(page, { x: 25, y: 10, width: 50, height: 75 }); await saveDialog(page);
   await expect(page.locator(".cropped-preview")).toHaveAttribute("viewBox", "150 40 300 300");
   const saved = await snapshot(page);
@@ -719,14 +767,16 @@ test("crop is metadata-only, original editor and viewer retain full image, and r
   await page.reload(); await expect(page.locator(".cropped-preview")).toHaveAttribute("viewBox", "150 40 300 300");
   await page.getByRole("button", { name: "Crop image crop.png", exact: true }).click();
   await expect(page.locator(".crop-stage>img")).toHaveJSProperty("naturalWidth", 600);
-  await expect(page.locator("[name=crop-x]")).toHaveValue("25");
+  expect(await page.locator(".crop-frame").evaluate(node => parseFloat(node.style.left))).toBe(25);
   await page.getByRole("button", { name: "Reset crop", exact: true }).click();
   await page.locator("#cancel-editor").click();
   expect((await snapshot(page)).state.tabs[0].sections[0].items[0].crop.x).toBe(.25);
   await page.getByRole("button", { name: "Crop image crop.png", exact: true }).click();
   await setCrop(page, { x: 80, width: 50 });
-  await page.locator("#editor-submit").click(); await expect(page.locator("#editor-error")).toContainText("at most 100%");
+  expect(await page.locator(".crop-frame").evaluate(node => parseFloat(node.style.left))).toBe(50);
+  await page.locator("#cancel-editor").click();
   expect((await snapshot(page)).state.tabs[0].sections[0].items[0].crop.x).toBe(.25);
+  await page.getByRole("button", { name: "Crop image crop.png", exact: true }).click();
   await page.getByRole("button", { name: "Reset crop", exact: true }).click(); await saveDialog(page);
   await expect(page.locator(".cropped-preview")).toHaveCount(0);
   await expect(page.locator(".image-hit img")).toHaveJSProperty("naturalWidth", 600);
@@ -755,13 +805,13 @@ test("crop frame draws, moves and resizes with mouse and touch while keeping ori
     };
     const at = (x, y) => ({ x: stage.x + stage.width * x, y: stage.y + stage.height * y });
     await drag(at(.05, .05), at(.65, .65));
-    expect(Number(await target.locator("[name=crop-x]").inputValue())).toBeCloseTo(5, 0);
-    expect(Number(await target.locator("[name=crop-width]").inputValue())).toBeCloseTo(60, 0);
+    expect(await target.locator(".crop-frame").evaluate(node => parseFloat(node.style.left))).toBeCloseTo(5, 0);
+    expect(await target.locator(".crop-frame").evaluate(node => parseFloat(node.style.width))).toBeCloseTo(60, 0);
     await drag(at(.35, .35), at(.45, .45));
-    expect(Number(await target.locator("[name=crop-x]").inputValue())).toBeCloseTo(15, 0);
+    expect(await target.locator(".crop-frame").evaluate(node => parseFloat(node.style.left))).toBeCloseTo(15, 0);
     const corner = await target.locator("[data-corner=se]").boundingBox();
     await drag({ x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 }, at(.85, .85));
-    expect(Number(await target.locator("[name=crop-width]").inputValue())).toBeCloseTo(70, 0);
+    expect(await target.locator(".crop-frame").evaluate(node => parseFloat(node.style.width))).toBeCloseTo(70, 0);
     await saveDialog(target); expect(Buffer.from((await snapshot(target)).assets[0][1].bytes).equals(bytes)).toBe(true);
     await context.close();
   }
@@ -875,7 +925,7 @@ test("tabs edit on double-click, F2, or touch hold without the board-heading blo
   await mobile.close();
 });
 
-test("layout icons and flipped edit control match dimensions, with paste toolbar hidden", async ({ page }) => {
+test("20px layout icons and square horizontally flipped edit control, with paste toolbar hidden", async ({ page }) => {
     await ready(page);
     await expect(page.locator("#paste-toolbar")).toBeHidden();
     await expect(page.locator(".zoom-label")).toHaveText("");
@@ -888,7 +938,10 @@ test("layout icons and flipped edit control match dimensions, with paste toolbar
     for (const width of [320, 390, 768, 1440]) {
       await page.setViewportSize({ width, height: 844 });
       const group = await page.locator(".view-switch").boundingBox(), edit = await page.locator("#edit-toggle").boundingBox();
-      expect(edit.width).toBeCloseTo(group.width, 1); expect(edit.height).toBeCloseTo(group.height, 1);
+      expect(edit.width).toBe(38); expect(edit.height).toBe(38);
+      for (const icon of await page.locator(".view-switch svg, #edit-toggle svg, #add-images svg").all()) {
+        const box = await icon.boundingBox(); expect(box.width).toBe(20); expect(box.height).toBe(20);
+      }
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     }
     await expect(page.locator("#edit-toggle svg")).toHaveCSS("transform", "matrix(-1, 0, 0, 1, 0, 0)");
@@ -900,6 +953,7 @@ test("Caption switches persist and source icon links remain independent of capti
     await paste(page, ["original-name.png"], bytes, `SourceURL:${source}\r\n`);
     await upload(page, ["no-source.png"], bytes);
     await expect(page.locator(".source-missing")).toHaveCount(0);
+    await expect(page.locator(".card-caption").first()).toBeHidden();
     await expect(page.locator(".card-caption").last()).toBeHidden();
     const shortcut = page.locator(".card-tools .source-button");
     await expect(shortcut).toHaveCount(1); await expect(shortcut).toHaveAttribute("href", source);
@@ -908,9 +962,11 @@ test("Caption switches persist and source icon links remain independent of capti
     await expect(page.locator(".source-field-label .source-button")).toHaveAttribute("href", source);
     await page.locator("#cancel-editor").click();
     await page.locator("#more").click();
-    await expect(page.locator("#editor-fields").locator(":scope > *").first()).toHaveText("Caption");
+    await expect(page.locator("#editor-fields > .settings-manage").first().getByRole("heading", { name: "Manage", exact: true })).toBeVisible();
     await expect(page.locator("#editor [name=theme]")).toHaveCount(0);
     await expect(page.locator("#editor-extra").locator(":scope > *").last().locator("[name=accent]")).toHaveCount(1);
+    await expect(page.getByRole("switch", { name: "Show captions", exact: true })).not.toBeChecked();
+    await page.getByRole("switch", { name: "Show captions", exact: true }).check();
     await page.getByRole("switch", { name: "Show filenames", exact: true }).check();
     await saveDialog(page);
     await expect(page.locator(".card-caption h3").first()).toBeVisible();
@@ -936,6 +992,8 @@ test("Caption switches persist and source icon links remain independent of capti
     await page.locator("#more").click(); await page.getByRole("switch", { name: "Show captions", exact: true }).check();
     await page.getByRole("switch", { name: "Show URLs", exact: true }).check(); await saveDialog(page);
     await expect(page.locator(".source-link")).toBeVisible();
+    await page.reload();
+    await expect(page.locator(".source-link")).toBeVisible();
   });
 
 test("compact Caption actions stay together and 30px commands overlay originals and crops in every layout", async ({ page }) => {
@@ -952,12 +1010,12 @@ test("compact Caption actions stay together and 30px commands overlay originals 
     expect(input.x - label.x - label.width).toBeCloseTo(8, 0);
     expect(input.y + input.height / 2).toBeCloseTo(label.y + label.height / 2, 0);
   }
-  await page.getByRole("switch", { name: "Show captions", exact: true }).uncheck();
+  await page.getByRole("switch", { name: "Show captions", exact: true }).check();
   await page.locator("#cancel-editor").click();
-  await expect(page.locator(".card-caption").first()).toBeVisible();
+  await expect(page.locator(".card-caption").first()).toBeHidden();
   await page.locator("#more").click();
-  await expect(page.getByRole("switch", { name: "Show captions", exact: true })).toBeChecked();
-  await page.getByRole("switch", { name: "Show captions", exact: true }).uncheck(); await saveDialog(page);
+  await expect(page.getByRole("switch", { name: "Show captions", exact: true })).not.toBeChecked();
+  await saveDialog(page);
   await page.getByRole("button", { name: "Edit image overlay.png", exact: true }).click();
   await expect(page.locator("#editor-form > .dialog-footer")).toHaveCount(1);
   await expect(page.locator("#editor")).not.toHaveClass(/settings-editor/);
@@ -983,7 +1041,7 @@ test("compact Caption actions stay together and 30px commands overlay originals 
           const box = await control.boundingBox(); expect(box.width).toBe(30); expect(box.height).toBe(30);
         }
         for (const icon of await card.locator(".card-tools svg").all()) {
-          const box = await icon.boundingBox(); expect(box.width).toBe(16); expect(box.height).toBe(16);
+          const box = await icon.boundingBox(); expect(box.width).toBe(20); expect(box.height).toBe(20);
         }
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
@@ -1013,6 +1071,173 @@ test("photo details follow the compact field order and the 20px site shortcut fo
   await expect(page.locator(".source-go")).toHaveCount(0);
   await page.locator("[name=notes]").fill("Placement notes."); await saveDialog(page);
   expect((await snapshot(page)).state.tabs[0].sections[0].items[0]).toMatchObject({ notes: "Placement notes.", sourceUrl: "" });
+});
+
+test("header controls are compact and Manage precedes captions without the removed menu actions", async ({ page }) => {
+  await ready(page);
+  await expect(page.locator(".app-header .brand, .app-header .tagline")).toHaveCount(0);
+  expect(await page.locator(".header-start > button").evaluateAll(buttons => buttons.map(button => button.id))).toEqual(["more", "add-images"]);
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(page.locator("#save-status")).toBeVisible();
+    const upload = await page.locator("#add-images").boundingBox(), status = await page.locator("#save-status").boundingBox(), save = await page.locator("#save-portable").boundingBox();
+    expect(status.x).toBeGreaterThanOrEqual(upload.x + upload.width);
+    expect(save.x).toBeGreaterThanOrEqual(status.x + status.width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+  await page.locator("#more").click();
+  await expect(page.locator("#editor-title")).toBeHidden();
+  await expect(page.locator("#editor")).not.toContainText("Make yourself at home");
+  for (const name of ["Paste images", "Append at bottom"]) await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+  expect(await page.locator("#editor-fields > :first-child > :first-child").textContent()).toBe("Manage");
+  const actions = await page.locator(".manage-actions").boundingBox(), captions = await page.locator(".caption-heading").boundingBox();
+  expect(captions.y).toBeGreaterThan(actions.y + actions.height);
+  expect(await page.locator(".settings-manage").evaluate(manage => [...manage.children].filter(node => node.classList.contains("hint")).every(node => node.previousElementSibling))).toBe(true);
+});
+
+test("local menu keeps GitHub controls visible but disabled, with offline backups still available", async ({ page, context }) => {
+  await ready(page); await page.locator("#more").click();
+  await expect(page.locator(".github-action")).toHaveCount(5);
+  for (const action of await page.locator(".github-action").all()) {
+    await expect(action).toBeVisible(); await expect(action).toBeDisabled();
+    await expect(action).toHaveAttribute("title", /published website/);
+  }
+  await expect(page.getByRole("link", { name: "Login", exact: true })).toHaveAttribute("aria-disabled", "false");
+  await context.setOffline(true);
+  await expect(page.getByRole("link", { name: "Login", exact: true })).toHaveAttribute("aria-disabled", "true");
+  for (const name of ["Export JSON backup", "Import JSON backup", "Offline & portability guide"]) {
+    await expect(page.getByRole("button", { name, exact: true })).toBeEnabled();
+  }
+  await context.setOffline(false);
+  await expect(page.getByRole("link", { name: "Login", exact: true })).toHaveAttribute("aria-disabled", "false");
+  for (const action of await page.locator(".github-action").all()) await expect(action).toBeDisabled();
+});
+
+test("GitHub login is first when disconnected and hidden after connecting", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
+  try {
+    const client = await shared.open();
+    await client.page.locator("#more").click();
+    await expect(client.page.locator(".manage-actions > :first-child").getByRole("link", { name: "Login", exact: true })).toHaveAttribute("href", "https://github.com/login");
+    expect(await client.page.locator(".manage-actions > :first-child > *").allTextContents()).toEqual(["Login", "Enable auto-sync"]);
+    await expect(client.page.locator(".enable-auto-sync .sync-check")).toHaveCount(0);
+    for (const action of await client.page.locator(".github-action").all()) await expect(action).toBeEnabled();
+    await client.context.setOffline(true);
+    for (const action of await client.page.locator(".github-action").all()) {
+      await expect(action).toBeVisible(); await expect(action).toBeDisabled();
+    }
+    await expect(client.page.getByRole("link", { name: "Login", exact: true })).toHaveAttribute("aria-disabled", "true");
+    await client.context.setOffline(false);
+    for (const action of await client.page.locator(".github-action").all()) await expect(action).toBeEnabled();
+    await expect(client.page.locator(".manage-actions > :nth-child(2)")).toHaveText("Force re-sync");
+    await expect(client.page.locator(".manage-actions > :nth-child(3)")).toHaveText("Merge local with Github version");
+    await expect(client.page.locator(".manage-actions > :last-child")).toHaveText("Offline & portability guide");
+    expect(await client.page.locator(".manage-actions > :nth-last-child(2) button").allTextContents()).toEqual(["Export JSON backup", "Import JSON backup"]);
+    expect(await client.page.locator(".destructive-actions button").allTextContents()).toEqual(["Replace Github with local version", "Replace local with Github version"]);
+    await client.page.locator("#cancel-editor").click();
+    await authenticateShared(client.page);
+    await client.page.locator("#more").click();
+    await expect(client.page.getByRole("link", { name: "Login", exact: true })).toHaveCount(0);
+    await expect(client.page.locator(".enable-auto-sync .sync-check")).toHaveText("✓");
+    await expect(client.page.getByRole("button", { name: "Disconnect GitHub", exact: true })).toBeVisible();
+    await client.page.getByRole("button", { name: "Disconnect GitHub", exact: true }).click();
+    await client.page.locator("#more").click();
+    await expect(client.page.getByRole("link", { name: "Login", exact: true })).toBeVisible();
+    await expect(client.page.locator(".enable-auto-sync .sync-check")).toHaveCount(0);
+  } finally { await shared.close(); }
+});
+
+test("delete-warning allowance counts ten actions, not ten images, and cancellation never grants a skip", async ({ page }) => {
+  await ready(page); await upload(page, Array.from({ length: 24 }, (_, index) => `delete-${index}.png`), await png(page, 120, 160));
+  const removeFirst = async () => {
+    await page.locator(".image-card").first().evaluate(card => card.scrollIntoView({ block: "center" }));
+    await page.locator(".image-card").first().getByRole("button", { name: /^Delete image/ }).click();
+  };
+  await removeFirst(); await page.locator("#delete-skip").fill("10"); await page.locator("#delete-warning-cancel").click();
+  await expect(page.locator(".image-card")).toHaveCount(24);
+  await removeFirst(); await expect(page.locator("#delete-warning")).toBeVisible();
+  for (const value of ["-1", "1.5", ""]) {
+    await page.locator("#delete-skip").fill(value); await page.locator("#delete-warning-submit").click();
+    await expect(page.locator("#delete-warning")).toBeVisible(); await expect(page.locator(".image-card")).toHaveCount(24);
+  }
+  await page.locator("#delete-skip").fill("10"); await page.locator("#delete-warning-submit").click();
+  await expect(page.locator(".image-card")).toHaveCount(23);
+  await page.locator(".select-image").evaluateAll(inputs => inputs.slice(0, 10).forEach(input => input.click()));
+  await expect(page.locator("#selection-count")).toHaveText("10 selected");
+  await page.locator("#delete-selected").click(); await expect(page.locator(".image-card")).toHaveCount(13);
+  await expect(page.locator("#delete-warning")).not.toBeVisible();
+  for (let index = 0; index < 9; index++) {
+    await removeFirst(); await expect(page.locator(".image-card")).toHaveCount(12 - index);
+    await expect(page.locator("#delete-warning")).not.toBeVisible();
+  }
+  await removeFirst(); await expect(page.locator("#delete-warning")).toBeVisible();
+  await expect(page.locator(".image-card")).toHaveCount(4);
+  await page.keyboard.press("Escape");
+  await removeFirst(); await expect(page.locator("#delete-warning")).toBeVisible();
+  await page.locator("#delete-warning-submit").click(); await expect(page.locator(".image-card")).toHaveCount(3);
+  await page.locator(".image-card").first().getByRole("button", { name: /^Edit image/ }).click();
+  await page.locator("#editor-delete").click(); await expect(page.locator("#delete-warning")).toBeVisible();
+  await page.locator("#delete-warning-cancel").click(); await expect(page.locator("#editor")).toBeVisible();
+  await page.locator("#editor-delete").click(); await page.locator("#delete-skip").fill("1");
+  await page.locator("#delete-warning-submit").click(); await expect(page.locator(".image-card")).toHaveCount(2);
+  await expect(page.locator("#editor")).not.toBeVisible();
+  await page.reload(); await expect(page.locator(".image-card")).toHaveCount(2);
+  await removeFirst(); await expect(page.locator("#delete-warning")).toBeVisible();
+});
+
+test("lightbox uses the full screen width and links to explicit source images without inventing missing URLs", async ({ page, context }) => {
+  await ready(page); const bytes = await png(page, 2400, 400);
+  await paste(page, ["wide.png"], bytes, 'SourceURL:https://example.test/blog/article\r\n<img src="/images/full.png">');
+  await expect(page.locator(".image-card")).toHaveCount(1);
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.getByRole("button", { name: "Open original image: wide.png", exact: true }).click();
+    await expect(page.locator("#viewer-original")).toHaveAttribute("href", "https://example.test/images/full.png");
+    await expect(page.locator("#viewer-source")).toHaveAttribute("href", "https://example.test/blog/article");
+    await expect(page.locator("#viewer-download")).toHaveAttribute("href", /^blob:/);
+    const box = await page.locator("#viewer-image").boundingBox();
+    expect(box.x).toBeCloseTo(0, 0); expect(box.width).toBeCloseTo(width, 0);
+    await page.locator("#viewer-close").click();
+  }
+  await context.route("https://example.test/images/full.png", route => route.fulfill({ contentType: "image/png", body: bytes }));
+  await page.getByRole("button", { name: "Open original image: wide.png", exact: true }).click();
+  const popupEvent = context.waitForEvent("page"); await page.locator("#viewer-original").click();
+  const popup = await popupEvent; await popup.waitForLoadState(); expect(popup.url()).toBe("https://example.test/images/full.png"); await popup.close();
+  await page.locator("#viewer-close").click();
+  for (const [name, html] of [
+    ["ambiguous.png", '<img src="https://example.test/a.png"><img src="https://example.test/b.png">'],
+    ["unsafe.png", '<img src="javascript:alert(1)">'],
+    ["empty.png", 'SourceURL:https://example.test/blog\r\n<img src="">']
+  ]) await paste(page, [name], bytes, html);
+  await expect(page.locator(".image-card")).toHaveCount(4);
+  expect((await snapshot(page)).state.tabs[0].sections[0].items.slice(1).every(item => item.sourceImageUrl === "")).toBe(true);
+  await page.getByRole("button", { name: "Open original image: empty.png", exact: true }).click();
+  await expect(page.locator("#viewer-original")).toHaveAttribute("href", /^blob:/);
+});
+
+test("tabs and layout controls form a shy sticky header that returns on upward scroll and keyboard focus", async ({ page }) => {
+  await ready(page); await upload(page, Array.from({ length: 18 }, (_, index) => `scroll-${index}.png`), await png(page, 200, 400));
+  await page.getByRole("button", { name: "Grid", exact: true }).click();
+  await expect(page.locator(".images")).toHaveAttribute("data-layout", "grid");
+  await expect(page.locator("#save-status")).toHaveText("Saved on this device");
+  const header = page.locator("#board-header");
+  await expect(header).toHaveCSS("position", "sticky");
+  await expect(header.locator("#tabs, .layout-tools")).toHaveCount(2);
+  for (const width of [390, 1440]) {
+    await page.evaluate(() => { document.activeElement.blur(); scrollTo(0, 0); });
+    await page.setViewportSize({ width, height: 800 });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.evaluate(() => scrollTo(0, 500));
+    await expect(header).toHaveClass(/shy-hidden/);
+    await page.evaluate(() => scrollTo(0, 400));
+    await expect(header).not.toHaveClass(/shy-hidden/);
+    await expect(header).toHaveCSS("transform", "none");
+    expect((await header.boundingBox()).y).toBeCloseTo(0, 0);
+    await page.evaluate(() => scrollTo(0, 700)); await expect(header).toHaveClass(/shy-hidden/);
+    await page.getByRole("button", { name: "Grid", exact: true }).focus();
+    await expect(header).not.toHaveClass(/shy-hidden/);
+    await page.evaluate(() => scrollTo(0, 0)); await expect(header).not.toHaveClass(/shy-hidden/);
+  }
 });
 
 test("selection copies share one original but keep independent crops and compact toolbar buttons", async ({ page }, testInfo) => {
@@ -1062,8 +1287,8 @@ test("authenticated GitHub saves reach public devices, preserve bytes, and delet
     for (const [, asset] of shared.record.board.assets) expect(Buffer.from(asset.data.split(",")[1], "base64").equals(fixture.bytes)).toBe(true);
     const phone = await shared.open({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, authenticated: true });
     await expect(phone.page.locator(".image-card")).toHaveCount(2);
-    phone.page.once("dialog", (dialog) => dialog.accept());
     await phone.page.getByRole("button", { name: "Delete image uploaded.png", exact: true }).click();
+    await phone.page.locator("#delete-warning-submit").click();
     await expect(phone.page.locator(".image-card")).toHaveCount(1);
     await expect(phone.page.locator("#save-status")).toHaveText("Saved to GitHub");
     expect(shared.record.board.assets).toHaveLength(1);
@@ -1089,10 +1314,20 @@ test("offline GitHub outbox survives reload, reconnects, and portable copies sta
     expect(JSON.parse(contents.match(/<script id="cloud-config" type="application\/json">([\s\S]*?)<\/script>/)[1])).toBeNull();
     const offline = await browser.newContext({ offline: true }), reader = await offline.newPage();
     await reader.goto(pathToFileURL(output).href); await expect(reader.locator(".image-card")).toHaveCount(2);
-    await expect(reader.locator("#save-status")).toHaveText("Saved on this device"); await offline.close();
+    await expect(reader.locator("#save-status")).toHaveText("Saved on this device");
+    await reader.locator("#more").click();
+    await expect(reader.locator(".github-action")).toHaveCount(5);
+    for (const action of await reader.locator(".github-action").all()) await expect(action).toBeDisabled();
+    await expect(reader.getByRole("button", { name: "Export JSON backup", exact: true })).toBeEnabled();
+    await offline.close();
     await device.context.setOffline(false);
-    await expect(device.page.locator("#save-status")).toHaveText("Saved here · connect GitHub");
-    await authenticateShared(device.page);
+    await expect(device.page.locator("#save-status")).toHaveText("Saved here · Enable auto-sync");
+    const enable = device.page.locator("#save-status").getByRole("link", { name: "Enable auto-sync", exact: true });
+    await expect(enable).toHaveAttribute("aria-disabled", "false");
+    await enable.focus(); await device.page.keyboard.press("Enter");
+    await expect(device.page.locator("#editor-title")).toHaveText("Enable auto-sync");
+    await device.page.locator("[name=githubToken]").fill("test-only-token"); await saveDialog(device.page);
+    await expect(device.page.locator("#save-status")).toHaveText("Saved to GitHub");
     expect(shared.record.board.assets).toHaveLength(2);
   } finally { await shared.close(); }
 });
@@ -1110,7 +1345,7 @@ test("simultaneous public edits report conflicts without overwriting, and mergin
     expect(shared.record.board.state.tabs.flatMap((tab) => tab.sections.flatMap((section) => section.items.map((item) => item.title)))).toEqual(["shared-original.png", "online-A.png"]);
     expect(await titles(b.page)).toEqual(["shared-original.png", "offline-B.png"]);
     await b.page.locator("#more").click();
-    await b.page.getByRole("button", { name: "Merge local and shared boards", exact: true }).click();
+    await b.page.getByRole("button", { name: "Merge local with Github version", exact: true }).click();
     await expect(b.page.locator("#editor")).not.toBeVisible();
     await expect(b.page.locator("#save-status")).toHaveText("Saved to GitHub");
     const names = shared.record.board.state.tabs.flatMap((tab) => tab.sections.flatMap((section) => section.items.map((item) => item.title)));
@@ -1124,7 +1359,7 @@ test("first connection merges an existing local collection rather than discardin
     const deviceContext = await browser.newContext({ serviceWorkers: "block" }), device = await deviceContext.newPage();
     await ready(device); await upload(device, ["local-only.png"], fixture.bytes);
     await shared.connect(deviceContext); await device.reload();
-    await expect(device.locator("#save-status")).toHaveText("Saved here · connect GitHub");
+    await expect(device.locator("#save-status")).toHaveText("Saved here · Enable auto-sync");
     await authenticateShared(device);
     await expect(device.locator("#save-status")).toHaveText("Saved to GitHub");
     const names = shared.record.board.state.tabs.flatMap((tab) => tab.sections.flatMap((section) => section.items.map((item) => item.title)));

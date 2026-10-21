@@ -6,6 +6,8 @@
   const clone = (value) => structuredClone(value);
   const editor = $("#editor");
   const viewer = $("#viewer");
+  const deleteWarning = $("#delete-warning");
+  let deleteSkipsRemaining = 0, deleting = false;
   let state, db, assets = new Map(), urls = new Map();
   let editable = true, selection = new Set(), cursor = null, editorAction, editorDelete, editorSuccess;
   let queue = Promise.resolve(), pending = 0, memoryOnly = false, dirty = false;
@@ -33,9 +35,12 @@
     node.addEventListener("click", action);
     return node;
   }
+  function setIcon(node, shapes) {
+    node.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${shapes}</svg>`;
+  }
   function notify(message) {
     clearTimeout(noticeTimer);
-    $("#notice").textContent = message;
+    syncText($("#notice"), message);
     $("#notice").hidden = false;
     noticeTimer = setTimeout(() => { $("#notice").hidden = true; }, 7000);
   }
@@ -79,9 +84,19 @@
     const openGraph = template.content.querySelector('meta[property="og:url"][content]');
     return sourcePageURL(canonical?.getAttribute("href")) || sourcePageURL(openGraph?.getAttribute("content"));
   }
+  function clipboardSourceImage(html) {
+    const template = document.createElement("template"); template.innerHTML = html;
+    const base = clipboardSourcePage(html);
+    const sources = new Set([...template.content.querySelectorAll("img[src]")].map((image) => {
+      const value = image.getAttribute("src");
+      if (!value?.trim()) return "";
+      try { return sourcePageURL(new URL(value, base || undefined).href); } catch { return ""; }
+    }).filter(Boolean));
+    return sources.size === 1 ? [...sources][0] : "";
+  }
   function initialState() {
     const tabId = uid();
-    return { schema: 1, id: uid(), revision: 0, activeTab: tabId, settings: { layout: "masonry", zoom: matchMedia("(max-width: 600px)").matches ? 150 : 220, theme: "light", accent: "#637554", showCaptions: true, showFilenames: false, showUrls: true },
+    return { schema: 1, id: uid(), revision: 0, activeTab: tabId, settings: { layout: "masonry", zoom: matchMedia("(max-width: 600px)").matches ? 150 : 220, theme: "light", accent: "#637554", showCaptions: false, showFilenames: false, showUrls: true },
       tabs: [{ id: tabId, name: "My inspiration", sections: [{ id: uid(), name: "The little things", collapsed: false, items: [] }] }] };
   }
   function openDB() {
@@ -130,11 +145,38 @@
     if (cloudEnabled) {
       status = cloudConflict ? "Save conflict · kept on device" : cloudSaving ? "Saving to GitHub…"
         : cloudError ? cloudInfo.revision || allItems().length ? "Saved here · GitHub unavailable" : "Could not load GitHub board" : !cloudReady ? "Connecting to shared board…"
-        : cloudInfo.dirty ? github.connected ? "Saved here · waiting for GitHub" : "Saved here · connect GitHub" : "Saved to GitHub";
+        : cloudInfo.dirty ? github.connected ? "Saved here · waiting for GitHub" : "Saved here · Enable auto-sync" : "Saved to GitHub";
       if (memoryOnly && cloudInfo.dirty) status = "In memory · export a backup";
     }
-    $("#save-status").textContent = pending ? "Saving…" : status;
+    syncText($("#save-status"), pending ? "Saving…" : status);
     $("#save-portable").disabled = pending > 0 || !state || Boolean(cloudEnabled && !cloudReady && !cloudInfo.revision && !allItems().length);
+  }
+  function syncText(node, text) {
+    const label = "Enable auto-sync";
+    if (!cloudEnabled || !text.includes(label)) { node.textContent = text; return; }
+    if (node.textContent === text && node.querySelector(".auto-sync-link")) return;
+    node.replaceChildren();
+    text.split(label).forEach((part, index) => {
+      if (index) {
+        const link = el("a", "auto-sync-link", label); link.href = "#enable-auto-sync";
+        link.addEventListener("click", (event) => { event.preventDefault(); if (navigator.onLine) connectGitHub(); });
+        node.append(link);
+      }
+      node.append(document.createTextNode(part));
+    });
+    updateGitHubControls();
+  }
+  function updateGitHubControls() {
+    const unavailable = !navigator.onLine ? "Reconnect to the internet to use GitHub."
+      : !cloudEnabled ? "GitHub sync is available on the published website. Local and portable copies save on this device." : "";
+    for (const control of $$(".github-action")) {
+      control.disabled = Boolean(unavailable) || $("#editor-submit").disabled;
+      control.title = unavailable || (control.querySelector(".sync-check") ? "Auto-sync is enabled for this tab" : "");
+    }
+    for (const link of $$(".github-login, .auto-sync-link")) {
+      link.setAttribute("aria-disabled", String(!navigator.onLine)); link.tabIndex = navigator.onLine ? 0 : -1;
+      link.title = navigator.onLine ? "" : unavailable;
+    }
   }
   function enqueue(action) {
     pending++; setSaveStatus();
@@ -257,11 +299,6 @@
     renderTabs();
     masonryObserver.disconnect();
     $("#sections").replaceChildren(...current.sections.map(renderSection));
-    if (!current.sections.length) {
-      const empty = el("div", "empty-section");
-      empty.append(el("strong", "", "A little room for possibility."), el("p", "", "Add a section, or paste an image to start collecting."));
-      $("#sections").append(empty);
-    }
     renderCursor(); renderSelection(); setSaveStatus();
     masonryObserver.observe($("#sections"));
     for (const card of $$(".image-card")) masonryObserver.observe(card);
@@ -305,10 +342,12 @@
     const header = el("div", "section-header");
     const toggle = button("", () => mutate((next) => { findSection(section.id, next).collapsed = !findSection(section.id, next).collapsed; }), "section-toggle");
     toggle.setAttribute("aria-expanded", String(!section.collapsed));
-    toggle.append(el("span", "chevron", "▾"), el("strong", "", section.name), el("small", "", String(section.items.length)));
+    const chevron = el("span", "chevron"); setIcon(chevron, '<path d="m6 9 6 6 6-6"/>');
+    toggle.append(chevron, el("strong", "", section.name), el("small", "", String(section.items.length)));
     const actions = el("div", "section-actions edit-control");
     const add = button("+ Add", () => { setCursor(section.id); $("#image-files").click(); });
     const edit = button("···", () => openSection(section), "icon-button");
+    setIcon(edit, '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>');
     edit.setAttribute("aria-label", `Edit section ${section.name}`);
     actions.append(add, edit);
     header.append(toggle, actions); node.append(header);
@@ -317,12 +356,12 @@
     const images = el("div", "images"); images.dataset.layout = state.settings.layout;
     for (const item of section.items) images.append(renderItem(item, section.id));
     body.append(images);
+    const end = slot(section.id, null, `Paste at end of ${section.name}`, "section-end");
     if (!section.items.length) {
-      const empty = el("div", "empty-section");
-      empty.append(el("strong", "", "Good things start here."), el("p", "", "Paste an image anywhere, or add photos from your device."));
+      const empty = el("div", "empty-section edit-control");
+      empty.append(end);
       body.append(empty);
-    }
-    body.append(slot(section.id, null, `Paste at end of ${section.name}`, "section-end"));
+    } else body.append(end);
     node.append(body);
     return node;
   }
@@ -376,7 +415,7 @@
       link.hidden = state.settings.showUrls === false;
       caption.append(link);
     }
-    caption.hidden = state.settings.showCaptions === false || (filename.hidden && (!sourceUrl || state.settings.showUrls === false));
+    caption.hidden = !(state.settings.showCaptions ?? false) || (filename.hidden && (!sourceUrl || state.settings.showUrls === false));
     hit.append(img);
     const check = el("input", "select-image"); check.type = "checkbox";
     check.setAttribute("aria-label", `Select ${item.title}`);
@@ -387,14 +426,17 @@
       if (performance.now() >= suppressClickUntil) { selection.add(item.id); renderSelection(); notify("Hold and drag to rearrange, or use Move to… below."); }
     }, "card-tool drag-handle");
     drag.setAttribute("aria-label", `Drag ${item.title}`);
+    setIcon(drag, '<circle cx="8" cy="5" r="1"/><circle cx="16" cy="5" r="1"/><circle cx="8" cy="12" r="1"/><circle cx="16" cy="12" r="1"/><circle cx="8" cy="19" r="1"/><circle cx="16" cy="19" r="1"/>');
     const remove = button("×", () => { removeItems([item.id]).catch(report); }, "card-tool danger");
     remove.setAttribute("aria-label", `Delete image ${item.title}`);
     remove.title = "Delete image";
+    setIcon(remove, '<path d="m6 6 12 12M18 6 6 18"/>');
     const crop = button("", () => openCrop(item.id), "card-tool");
     crop.setAttribute("aria-label", `Crop image ${item.title}`); crop.title = "Crop image";
     crop.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v15h15M3 6h15v15M10 6h8v8"/></svg>';
     const edit = button("···", () => openImage(item.id), "card-tool");
     edit.setAttribute("aria-label", `Edit image ${item.title}`);
+    setIcon(edit, '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>');
     tools.append(drag, remove, crop);
     const sourceButton = sourceLink(item, "card-tool source-button");
     if (sourceButton) tools.append(sourceButton);
@@ -418,14 +460,16 @@
     control.value = value; label.append(control); $("#editor-fields").append(label);
     return control;
   }
-  function hint(text) { $("#editor-fields").append(el("p", "hint", text)); }
+  function hint(text) { const node = el("p", "hint"); syncText(node, text); $("#editor-fields").append(node); }
   function openEditor(title, save, remove) {
     $("#editor-form").append($(".dialog-footer"));
+    $("#crop-reset")?.remove();
     editor.classList.remove("crop-editor", "settings-editor");
     editorSuccess = "Saved to your space.";
     editorAction = save; editorDelete = remove;
     $("#editor-form").reset(); $("#editor-fields").replaceChildren(); $("#editor-extra").replaceChildren();
     $("#editor-title").textContent = title; $("#editor-error").hidden = true;
+    $("#editor-title").hidden = false;
     $("#editor-delete").hidden = !remove;
     $("#editor-submit").hidden = !save;
     $("#cancel-editor").textContent = save ? "Cancel" : "Done";
@@ -528,11 +572,9 @@
     const item = allItems().find((entry) => entry.id === itemId);
     const asset = assets.get(item.assetId);
     let crop = clone(item.crop || { x: 0, y: 0, width: 1, height: 1 }), drag;
-    const fromFields = () => Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value === "" ? NaN : Number(input.value) / 100]));
-    const cropError = "Enter a non-empty crop inside the image: Left + Width and Top + Height must each be at most 100%.";
-    openEditor(`Crop ${item.title}`, async () => {
-      const saved = fromFields();
-      if (!validCrop(saved)) throw new Error(cropError);
+    openEditor("Crop image", async () => {
+      const saved = clone(crop);
+      if (!validCrop(saved)) throw new Error("Choose a non-empty crop inside the original image.");
       await enqueue(() => commit((next) => {
         const target = allItems(next).find((entry) => entry.id === itemId);
         if (!target) throw new Error("This image is no longer in the collection.");
@@ -541,32 +583,32 @@
       }));
     });
     editor.classList.add("crop-editor");
-    hint("Drag on the original to draw a crop. Drag inside the frame to move it, or use its corners to resize. Only the board view changes; opening the image still shows the original.");
     const stage = el("div", "crop-stage");
     stage.style.aspectRatio = `${asset.width} / ${asset.height}`;
     stage.style.width = `min(100%, ${50 * asset.width / asset.height}vh)`;
     const original = el("img"); original.src = imageURL(item.assetId); original.alt = `Full original: ${item.title}`; original.draggable = false;
     original.addEventListener("error", () => showEditorError(new Error("Could not load the original image. Cancel and try again.")), { once: true });
     const frame = el("div", "crop-frame");
+    frame.tabIndex = 0; frame.setAttribute("role", "group");
+    frame.setAttribute("aria-label", "Crop selection. Arrow keys move; Shift and arrow keys resize in one-percent steps.");
     for (const corner of ["nw", "ne", "sw", "se"]) {
       const handle = el("span", "crop-handle"); handle.dataset.corner = corner; handle.setAttribute("aria-hidden", "true"); frame.append(handle);
     }
     stage.append(original, frame); $("#editor-fields").append(stage);
-    const inputs = {};
-    for (const [key, label] of [["x", "Left (%)"], ["y", "Top (%)"], ["width", "Width (%)"], ["height", "Height (%)"]]) {
-      const input = field(label, `crop-${key}`, "", "number");
-      input.min = 0; input.max = 100; input.step = "any"; input.required = true; inputs[key] = input;
-      input.addEventListener("input", () => {
-        const next = fromFields();
-        $("#editor-error").hidden = Boolean(validCrop(next));
-        if (validCrop(next)) { crop = next; paint(false); }
-        else $("#editor-error").textContent = cropError;
-      });
-    }
-    function paint(updateFields = true) {
+    function paint() {
       Object.assign(frame.style, { left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` });
-      if (updateFields) for (const [key, input] of Object.entries(inputs)) input.value = String(crop[key] * 100);
     }
+    frame.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      const horizontal = ["ArrowLeft", "ArrowRight"].includes(event.key);
+      const key = event.shiftKey ? horizontal ? "width" : "height" : horizontal ? "x" : "y";
+      const minimum = event.shiftKey ? 1 / (horizontal ? asset.width : asset.height) : 0;
+      const maximum = event.shiftKey ? 1 - crop[horizontal ? "x" : "y"] : 1 - crop[horizontal ? "width" : "height"];
+      const delta = ["ArrowLeft", "ArrowUp"].includes(event.key) ? -.01 : .01;
+      crop[key] = Math.max(minimum, Math.min(maximum, Number((crop[key] + delta).toFixed(8))));
+      $("#editor-error").hidden = true; paint();
+    });
     const point = (event) => {
       const rect = stage.getBoundingClientRect();
       return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) };
@@ -601,7 +643,8 @@
       if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
     };
     stage.addEventListener("pointerup", end); stage.addEventListener("pointercancel", end); stage.addEventListener("lostpointercapture", end);
-    $("#editor-extra").append(button("Reset crop", () => { crop = { x: 0, y: 0, width: 1, height: 1 }; $("#editor-error").hidden = true; paint(); }, "button"));
+    const reset = button("Reset crop", () => { crop = { x: 0, y: 0, width: 1, height: 1 }; $("#editor-error").hidden = true; paint(); }, "button");
+    reset.id = "crop-reset"; $(".dialog-footer").prepend(reset);
     paint();
   }
   function openImage(itemId) {
@@ -674,15 +717,41 @@
     hint("The selected images keep their relative order. Copies share the original bytes without doubling local storage.");
   }
   async function removeItems(ids) {
-    if (!confirm(`Delete ${ids.length} ${ids.length === 1 ? "image" : "images"}? This cannot be undone.`)) return false;
-    const wanted = new Set(ids);
-    await enqueue(() => commit((next) => {
-      for (const section of sections(next)) section.items = section.items.filter((item) => !wanted.has(item.id));
-    }));
-    selection.clear(); renderSelection();
+    if (deleting) { notify("Finish the current deletion first."); return false; }
+    deleting = true;
+    try {
+      const skipped = deleteSkipsRemaining > 0;
+      let allowance = deleteSkipsRemaining;
+      if (!skipped) {
+        $("#delete-warning-form").reset(); $("#delete-skip").setCustomValidity("");
+        $("#delete-warning-message").textContent = `Delete ${ids.length} ${ids.length === 1 ? "image" : "images"}? This cannot be undone.`;
+        deleteWarning.returnValue = "";
+        allowance = await new Promise((resolve) => {
+          deleteWarning.addEventListener("close", () => resolve(deleteWarning.returnValue === "delete" ? Number($("#delete-skip").value) : null), { once: true });
+          deleteWarning.showModal();
+        });
+        if (allowance === null) return false;
+      }
+      const wanted = new Set(ids);
+      await enqueue(() => commit((next) => {
+        for (const section of sections(next)) section.items = section.items.filter((item) => !wanted.has(item.id));
+      }));
+      deleteSkipsRemaining = skipped ? allowance - 1 : allowance;
+      selection.clear(); renderSelection();
+    } finally { deleting = false; }
   }
+  $("#delete-warning-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const input = $("#delete-skip"), count = Number(input.value);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      input.setCustomValidity("Enter a whole number of delete clicks, zero or greater."); input.reportValidity(); return;
+    }
+    deleteWarning.close("delete");
+  });
+  $("#delete-skip").addEventListener("input", (event) => event.target.setCustomValidity(""));
+  $("#delete-warning-cancel").addEventListener("click", () => deleteWarning.close("cancel"));
   function showEditorError(error) {
-    console.error(error); $("#editor-error").textContent = errorMessage(error); $("#editor-error").hidden = false;
+    console.error(error); syncText($("#editor-error"), errorMessage(error)); $("#editor-error").hidden = false;
   }
 
   async function readImage(file) {
@@ -714,7 +783,7 @@
       throw new Error(`Could not read “${file.name || "pasted image"}”. Choose an image supported by this browser.`, { cause: error });
     }
   }
-  function addFiles(files, target = cursor && { ...cursor }, sourceUrls = []) {
+  function addFiles(files, target = cursor && { ...cursor }, sourceUrls = [], sourceImageUrls = []) {
     if (!editable) { notify("Turn Edit on to add images."); return; }
     const list = [...files];
     if (!list.length) { notify("No image files found. Copy an image or use Add images."); return; }
@@ -723,7 +792,7 @@
       for (const [index, file] of list.entries()) {
         const asset = await readImage(file), assetId = uid();
         additions.set(assetId, asset);
-        items.push({ id: uid(), assetId, title: asset.name.slice(0, 300), notes: "", sourceUrl: sourceUrls[index] || "" });
+        items.push({ id: uid(), assetId, title: asset.name.slice(0, 300), notes: "", sourceUrl: sourceUrls[index] || "", sourceImageUrl: sourceImageUrls[index] || "" });
       }
       await commit((next) => insertItems(next, items, target), additions);
       const linked = items.filter((item) => item.sourceUrl).length;
@@ -734,12 +803,12 @@
     return target instanceof Element && Boolean(target.closest("input:not([type=checkbox]):not([type=range]), textarea, select, [contenteditable=true]"));
   }
   document.addEventListener("paste", (event) => {
-    if (!state || textTarget(event.target) || editor.open || viewer.open) return;
+    if (!state || textTarget(event.target) || editor.open || viewer.open || deleteWarning.open) return;
     const files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
     if (files.length) {
       event.preventDefault();
-      const sourceUrl = clipboardSourcePage(event.clipboardData.getData("text/html"));
-      addFiles(files, cursor && { ...cursor }, files.map(() => sourceUrl)); return;
+      const html = event.clipboardData.getData("text/html"), sourceUrl = clipboardSourcePage(html);
+      addFiles(files, cursor && { ...cursor }, files.map(() => sourceUrl), files.length === 1 ? [clipboardSourceImage(html)] : []); return;
     }
     if (internalClipboard.length && editable && event.clipboardData?.getData("text/plain") === "moodboard image selection") {
       event.preventDefault(); pasteInternal();
@@ -754,16 +823,19 @@
     }
     try {
       const entries = await navigator.clipboard.read();
-      const images = [], pageSources = new Set();
+      const images = [], pageSources = new Set(), imageSources = new Set();
       for (const entry of entries) {
         const html = entry.types.includes("text/html") ? await (await entry.getType("text/html")).text() : "";
         const sourceUrl = clipboardSourcePage(html);
+        const sourceImageUrl = clipboardSourceImage(html);
         if (sourceUrl) pageSources.add(sourceUrl);
+        if (sourceImageUrl) imageSources.add(sourceImageUrl);
         const type = entry.types.find((type) => supportedImage.test(type));
-        if (type) images.push({ file: await entry.getType(type), sourceUrl });
+        if (type) images.push({ file: await entry.getType(type), sourceUrl, sourceImageUrl });
       }
       const commonSource = pageSources.size === 1 ? [...pageSources][0] : "";
-      if (images.length) addFiles(images.map((image) => image.file), target, images.map((image) => image.sourceUrl || commonSource));
+      const commonImageSource = images.length === 1 && imageSources.size === 1 ? [...imageSources][0] : "";
+      if (images.length) addFiles(images.map((image) => image.file), target, images.map((image) => image.sourceUrl || commonSource), images.map((image) => image.sourceImageUrl || commonImageSource));
       else if (internalClipboard.length) pasteInternal();
       else notify("No image in the clipboard. Copy an image, then paste again, or use Add images.");
     } catch (error) {
@@ -780,7 +852,7 @@
     })).catch(() => {});
   }
   document.addEventListener("copy", (event) => {
-    if (!state || !editable || !selection.size || textTarget(event.target) || editor.open || viewer.open) return;
+    if (!state || !editable || !selection.size || textTarget(event.target) || editor.open || viewer.open || deleteWarning.open) return;
     internalClipboard = clone(tabItems().filter((item) => selection.has(item.id)));
     event.preventDefault(); event.clipboardData.setData("text/plain", "moodboard image selection");
     notify(`${internalClipboard.length} images copied inside moodboard. Choose a location or tab and paste.`);
@@ -803,7 +875,9 @@
     $("#viewer-details").textContent = `${asset.width} × ${asset.height} · ${sizeText(asset.blob.size)} · original`;
     const image = $("#viewer-image"); image.src = url; image.alt = item.title;
     image.width = asset.width; image.height = asset.height;
-    $("#viewer-original").href = url;
+    const sourceImageUrl = sourcePageURL(item.sourceImageUrl);
+    $("#viewer-original").href = sourceImageUrl || url;
+    $("#viewer-original").title = sourceImageUrl ? "Open the source image on its website" : "Open the saved original (source image URL unavailable)";
     const sourceUrl = sourcePageURL(item.sourceUrl);
     $("#viewer-source").hidden = !sourceUrl;
     if (sourceUrl) $("#viewer-source").href = sourceUrl;
@@ -857,6 +931,7 @@
   }
   function startDrag() {
     if (!gesture || !editable) return;
+    revealHeader();
     gesture.dragging = true;
     if (!selection.has(gesture.itemId)) { selection.clear(); selection.add(gesture.itemId); }
     gesture.ids = tabItems().filter((item) => selection.has(item.id)).map((item) => item.id);
@@ -890,12 +965,13 @@
         }).catch(() => {});
       }
     } else gesture.hoverTab = null;
-    const edge = 70, speed = gesture.y < edge ? -16 : gesture.y > innerHeight - edge ? 16 : 0;
+    const edge = 70, speed = hoveredTab ? 0 : gesture.y < edge ? -16 : gesture.y > innerHeight - edge ? 16 : 0;
     if (speed) window.scrollBy(0, speed);
     dragFrame = requestAnimationFrame(moveDrag);
   }
   function startSelectionBox() {
     if (!gesture || gesture.boxActive) return;
+    revealHeader();
     clearTimeout(gesture.timer);
     gesture.box = gesture.boxActive = true;
     gesture.capture = $("#sections");
@@ -951,7 +1027,7 @@
     }
   }, true);
   $("#sections").addEventListener("pointerdown", (event) => {
-    if (!editable || event.button !== 0 || editor.open || viewer.open || pending) return;
+    if (!editable || event.button !== 0 || editor.open || viewer.open || deleteWarning.open || pending) return;
     const card = event.target.closest(".image-card");
     const fromCheckbox = Boolean(event.target.closest(".image-selection"));
     const origin = { pointerId: event.pointerId, pointerType: event.pointerType, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY,
@@ -992,9 +1068,10 @@
   document.addEventListener("drop", (event) => {
     if (!event.dataTransfer?.files.length) return;
     event.preventDefault();
-    if (editor.open || viewer.open) return;
+    if (editor.open || viewer.open || deleteWarning.open) return;
     const location = dropLocation(event.clientX, event.clientY);
-    addFiles(event.dataTransfer.files, location || cursor);
+    const html = event.dataTransfer.getData("text/html"), files = [...event.dataTransfer.files];
+    addFiles(files, location || cursor, files.map(() => clipboardSourcePage(html)), files.length === 1 ? [clipboardSourceImage(html)] : []);
   });
 
   function blobToDataURL(blob) {
@@ -1083,7 +1160,7 @@
   }
   async function syncCloud() {
     if (!cloudEnabled || !state || cloudSaving || cloudConflict) return;
-    if (editor.open || viewer.open || gesture) { scheduleCloud(1500); return; }
+    if (editor.open || viewer.open || deleteWarning.open || gesture) { scheduleCloud(1500); return; }
     if (!navigator.onLine) { cloudError = "Offline. Changes are queued on this device."; setSaveStatus(); return; }
     cloudSaving = true; setSaveStatus();
     try {
@@ -1093,7 +1170,7 @@
         const record = await cloudRequest("GET", undefined, Boolean(cloudInfo.revision));
         let deferred = false;
         await enqueue(async () => {
-          if (editor.open || viewer.open || gesture) { deferred = true; return; }
+          if (editor.open || viewer.open || deleteWarning.open || gesture) { deferred = true; return; }
           if (record) {
             if (record.board === null && record.revision === null) {
               cloudInfo.revision = null; cloudInfo.dirty = true; await saveCloudMeta();
@@ -1157,11 +1234,11 @@
     if (!cloudConflict) scheduleCloud(0);
   }
   function connectGitHub() {
-    openEditor("Connect GitHub", async (form) => {
+    openEditor("Enable auto-sync", async (form) => {
       await github.connect(form.get("githubToken"));
       cloudReady = false; cloudError = ""; scheduleCloud(0);
     });
-    editorSuccess = "Connected to GitHub. Pending edits will upload automatically.";
+    editorSuccess = "Auto-sync enabled. Pending edits will upload automatically.";
     hint("Sign in to GitHub and create a fine-grained access token restricted to the moodboard repository, with Contents: Read and write. This is GitHub token authentication, not a separate moodboard account.");
     const setup = el("a", "button");
     setup.href = `https://github.com/settings/personal-access-tokens/new?name=Moodboard&target_name=${encodeURIComponent(cloudConfig.owner)}&contents=write&expires_in=30`;
@@ -1188,6 +1265,7 @@
       for (const manifest of html.querySelectorAll("link[rel=manifest]")) manifest.remove();
       find("#portable-data").textContent = JSON.stringify(data).replace(/</g, "\\u003c");
       find("#cloud-config").textContent = "null";
+      find("#board-header").classList.remove("shy-hidden");
       find("#editor-form").append(find(".dialog-footer"));
       for (const selector of ["#sections", "#tabs", "#editor-fields", "#editor-extra"]) find(selector).replaceChildren();
       for (const node of html.querySelectorAll("dialog")) node.removeAttribute("open");
@@ -1216,15 +1294,15 @@
   function guide() {
     openEditor("Take your inspiration anywhere", null);
     const paragraphs = [
-      ["Add quickly", "Press Ctrl+V / ⌘V anywhere outside a text field. Choose a “Paste here” gap first. The paste toolbar is hidden; Paste images and Append at bottom are in Settings and backups. Use the header image-plus icon for your photo library. Consecutive pastes keep their order."],
+      ["Add quickly", "Press Ctrl+V / ⌘V anywhere outside a text field. Choose a “Paste here” gap first, or the end-of-section gap to append. Use the header image-plus icon for your photo library. Consecutive pastes keep their order."],
       ["Source pages", "When the clipboard includes an explicit source-page URL or canonical page metadata, it is saved with the image. Image URLs are not mistaken for page URLs. Screenshots and most copied images omit the page address; add or correct it in the image’s details menu. Source page opens that link from the viewer. Links stay in offline saves and backups, but opening the source website requires internet."],
-      ["Captions", "Settings and backups starts with Caption switches for the entire caption, filenames, and URLs. Save to apply. Missing URLs have no placeholder text. Images with a source page also have a link icon on their hover controls and in their details menu, even if captions are hidden."],
+      ["Captions", "Below Manage in Settings and backups are Caption switches for the entire caption, filenames, and URLs. Save to apply. Missing URLs have no placeholder text. Images with a source page also have a link icon on their hover controls and in their details menu, even if captions are hidden."],
       ["Organize", "Grid and List always show selection checkboxes while editing. On desktop, quickly drag from an image, checkbox, or empty space to select a rectangle; hold Ctrl/Command/Shift to add to the selection. All selects the current tab; the section icon expands selection to every represented section. Hold an image to rearrange it instead; on phones use its dotted grip. Move provides an accessible alternative."],
-      ["Crop without losing originals", "Use an image's crop icon. The editor always shows the full original: draw a crop, move its frame, resize its corners, or enter percentages. Reset crop restores the full view; Cancel discards changes. Crops only affect the board, never original downloads or the full-image viewer, and are included in backups and portable copies."],
+      ["Crop without losing originals", "Use an image's crop icon. The editor always shows the full original: draw a crop, move its frame, or resize its corners. Keyboard users can focus the frame: arrows move it and Shift+arrows resize in one-percent steps. Reset crop, Cancel, and Save share the bottom bar. Crops only affect the board, never original downloads or the full-image viewer, and are included in backups and portable copies."],
       ["Tabs & sections", "Double-click a tab to rename, reposition, duplicate, or delete it. You can also focus it and press F2, or touch and hold it on a phone. Editing must be on. Use a section’s dots menu to organize that section."],
       ["Save to computer or USB", "Save portable copy downloads a single HTML file containing the app, every original image, and your organization. Open it on a computer without internet. It is a snapshot: after editing, save a NEW portable copy. The app cannot silently rewrite files on your USB."],
       ["On your phone", "For reliable phone use, open the hosted HTTPS site while online, then use your browser’s Add to Home Screen / Install option and import a JSON backup. Open it once to finish caching before going offline. Mobile Files apps may only preview local HTML rather than run it; portable HTML is not a guaranteed phone installation method."],
-      ["GitHub autosave", "The published board is publicly viewable. To upload changes, use Settings and backups → Connect GitHub with a fine-grained token restricted to the moodboard repository and Contents: Read and write. The token lives only in this open tab and is sent only to GitHub; reconnect after a reload. Changes upload automatically, including removal of an original file when its last placement is deleted. Earlier copies remain in Git history. Conflicts keep your local changes until you resolve them in Settings."],
+      ["GitHub autosave", "The published board is publicly viewable. To upload changes, use Settings and backups → Enable auto-sync with a fine-grained token restricted to the moodboard repository and Contents: Read and write. The token lives only in this open tab and is sent only to GitHub; enable it again after a reload. Changes upload automatically, including removal of an original file when its last placement is deleted. Earlier copies remain in Git history. Conflicts keep your local changes until you resolve them in Settings."],
       ["Offline & storage", "Original bytes are never resized or compressed. The shared site caches full originals and queues offline changes in this browser. Private browsing may discard storage, so keep backups. Save portable copy embeds ALL originals from ALL tabs and sections, including collapsed sections and the uncropped originals, plus organization and metadata. It needs no internet, GitHub login, or companion files. Portable copies contain no token and do not automatically publish; import their JSON backup on the hosted site to bring edits back. Large collections require substantial memory during export."],
       ["Selection & editing", "Editing is on by default each time the app opens. Use the pencil beside Masonry/Grid/List to toggle editing. Turning it off protects against accidental changes. Click an image to open the original-resolution viewer. Use arrows or swipe to browse; Actual size allows panning. Copy to… duplicates images between sections/tabs; Ctrl+C / ⌘C and paste also work within the open app."],
       ["Before your flight", "Import or paste your images, save a portable copy AND a JSON backup, then test the app in airplane mode on the device you’ll use. An offline installation is ready only when the status says “Offline ready”."]
@@ -1234,14 +1312,60 @@
     }
   }
   function settings() {
-    openEditor("Make yourself at home", async (form) => {
+    openEditor("Settings", async (form) => {
       await enqueue(() => commit((next) => {
         next.settings.accent = form.get("accent");
         for (const key of ["showCaptions", "showFilenames", "showUrls"]) next.settings[key] = form.has(key);
       }));
     });
     editor.classList.add("settings-editor");
-    for (const [key, label, fallback] of [["showCaptions", "Caption", true], ["showFilenames", "Show filenames", false], ["showUrls", "Show URLs", true]]) {
+    $("#editor-title").hidden = true;
+    const manage = el("section", "settings-manage"), actions = el("div", "dialog-extra manage-actions");
+    manage.append(el("h3", "guide-heading", "Manage"), actions); $("#editor-fields").append(manage);
+    {
+      const connection = el("div", "manage-row");
+      if (!github?.connected) {
+        const login = el("a", "button github-login", "Login");
+        login.addEventListener("click", (event) => { if (!navigator.onLine) event.preventDefault(); });
+        login.href = "https://github.com/login"; login.target = "_blank"; login.rel = "noopener noreferrer"; connection.append(login);
+      }
+      const enable = button("Enable auto-sync", connectGitHub, "button github-action enable-auto-sync");
+      if (github?.connected) {
+        const check = el("span", "sync-check", "✓"); check.setAttribute("aria-hidden", "true"); enable.append(check);
+        enable.title = "Auto-sync is enabled for this tab";
+      }
+      connection.append(enable);
+      if (github?.connected) connection.append(button("Disconnect GitHub", () => { github.disconnect(); editor.close(); setSaveStatus(); }, "button"));
+      actions.append(connection,
+        button("Force re-sync", () => { editor.close(); scheduleCloud(0); }, "button github-action"),
+        button("Merge local with Github version", () => resolveShared("merge"), "button github-action"));
+    }
+    if (navigator.storage?.persist) actions.append(button("Protect browser storage", async () => {
+      try {
+        const granted = await navigator.storage.persist();
+        notify(granted ? "Persistent storage granted. Still keep a portable backup." : "Your browser did not grant persistent storage. Export backups regularly.");
+      } catch (error) { report(error); }
+    }, "button"));
+    const backups = el("div", "manage-row");
+    backups.append(button("Export JSON backup", exportJSON, "button"), button("Import JSON backup", () => $("#backup-file").click(), "button"));
+    actions.append(backups, button("Offline & portability guide", guide, "button"));
+    {
+      const destructive = el("div", "destructive-actions");
+      destructive.append(el("h4", "guide-heading", "Destructive actions"),
+        button("Replace Github with local version", () => resolveShared("replace"), "button danger github-action"),
+        button("Replace local with Github version", () => resolveShared("load"), "button danger github-action"));
+      manage.append(destructive);
+      const sharing = el("p", "hint");
+      syncText(sharing, cloudEnabled ? "Anyone can view. Enable auto-sync with repository write access to upload edits automatically. Originals and organization are saved to the board branch; deletions remain in Git history. Offline edits wait on this device. No separate server or tunnel is required."
+        : "GitHub sync is available on the published website. Local and portable copies save only on this device; import their JSON backup on the hosted site to bring edits back.");
+      manage.append(sharing);
+      const status = el("p", "hint");
+      syncText(status, cloudConflict ? "A newer shared version conflicts with this device. Export a backup, then choose how to resolve it." : $("#save-status").textContent);
+      manage.append(status);
+    }
+    const total = [...assets.values()].reduce((sum, asset) => sum + asset.blob.size, 0);
+    manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)}. Local autosave is not a backup; export a copy regularly.`));
+    for (const [key, label, fallback] of [["showCaptions", "Caption", false], ["showFilenames", "Show filenames", false], ["showUrls", "Show URLs", true]]) {
       const input = field(label, key, "on", "checkbox");
       input.checked = state.settings[key] ?? fallback; input.setAttribute("role", "switch"); input.closest(".field").classList.add("caption-toggle");
       if (key === "showCaptions") {
@@ -1252,28 +1376,9 @@
       }
     }
     $("#editor-fields").append($(".dialog-footer"));
-    if (cloudEnabled) {
-      $("#editor-fields").append(el("h3", "guide-heading", "Shared GitHub board"));
-      hint("Anyone can view. Connect GitHub with repository write access to upload edits automatically. Originals and organization are saved to the board branch; deletions remain in Git history. Offline edits wait on this device. No separate server or tunnel is required.");
-      hint(cloudConflict ? "A newer shared version conflicts with this device. Export a backup, then choose how to resolve it." : $("#save-status").textContent);
-      $("#editor-extra").append(button(github.connected ? "Reconnect GitHub" : "Connect GitHub", connectGitHub, "button"),
-        button("Retry GitHub save", () => { editor.close(); scheduleCloud(0); }, "button"),
-        button("Merge local and shared boards", () => resolveShared("merge"), "button"),
-        button("Load shared version", () => resolveShared("load"), "button"),
-        button("Replace shared with this device", () => resolveShared("replace"), "button"));
-      if (github.connected) $("#editor-extra").append(button("Disconnect GitHub", () => { github.disconnect(); editor.close(); setSaveStatus(); }, "button"));
-    }
-    const total = [...assets.values()].reduce((sum, asset) => sum + asset.blob.size, 0);
-    hint(`${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)}. Local autosave is not a backup; export a copy regularly.`);
-    $("#editor-extra").append(button("Paste images", () => { editor.close(); pasteFromButton(); }, "button"), button("Append at bottom", () => { editor.close(); appendAtBottom(); }, "button"), button("Export JSON backup", exportJSON, "button"), button("Import JSON backup", () => $("#backup-file").click(), "button"), button("Offline & portability guide", guide, "button"));
-    if (navigator.storage?.persist) $("#editor-extra").append(button("Protect browser storage", async () => {
-      try {
-        const granted = await navigator.storage.persist();
-        notify(granted ? "Persistent storage granted. Still keep a portable backup." : "Your browser did not grant persistent storage. Export backups regularly.");
-      } catch (error) { report(error); }
-    }, "button"));
     const accent = field("Accent color", "accent", state.settings.accent, "color");
     $("#editor-extra").append(accent.closest(".field"));
+    updateGitHubControls();
   }
   $("#backup-file").addEventListener("change", async (event) => {
     const file = event.target.files[0]; event.target.value = "";
@@ -1303,15 +1408,17 @@
     $("#editor-error").hidden = true;
     try { await action(data); editor.close(); notify(editorSuccess); }
     catch (error) { showEditorError(error); }
-    finally { controls.forEach((control) => { control.disabled = false; }); }
+    finally { controls.forEach((control) => { control.disabled = false; }); updateGitHubControls(); }
   });
   $("#editor-delete").addEventListener("click", async () => {
     const controls = $$("button", editor); controls.forEach((control) => { control.disabled = true; });
     try { if (await editorDelete() !== false) { editor.close(); notify("Deleted."); } }
     catch (error) { showEditorError(error); }
-    finally { controls.forEach((control) => { control.disabled = false; }); }
+    finally { controls.forEach((control) => { control.disabled = false; }); updateGitHubControls(); }
   });
   $("#close-editor").addEventListener("click", () => editor.close());
+  addEventListener("online", updateGitHubControls);
+  addEventListener("offline", updateGitHubControls);
   $("#cancel-editor").addEventListener("click", () => editor.close());
   $("#save-portable").addEventListener("click", exportPortable);
   $("#more").addEventListener("click", () => { if (state) settings(); });
@@ -1335,6 +1442,18 @@
   $("#zoom").addEventListener("change", (event) => {
     const zoom = Number(event.target.value); mutate((next) => { next.settings.zoom = zoom; });
   });
+  const boardHeader = $("#board-header");
+  let headerScrollY = scrollY;
+  const revealHeader = () => { boardHeader.classList.remove("shy-hidden"); headerScrollY = Math.max(0, scrollY); };
+  boardHeader.addEventListener("focusin", revealHeader);
+  document.addEventListener("scroll", () => {
+    const y = Math.max(0, scrollY), delta = y - headerScrollY;
+    if (y === 0 || boardHeader.getBoundingClientRect().top > 0 || editor.open || viewer.open || gesture || boardHeader.querySelector(":focus-visible")) {
+      revealHeader(); return;
+    }
+    if (Math.abs(delta) < 8) return;
+    boardHeader.classList.toggle("shy-hidden", delta > 0); headerScrollY = y;
+  }, { passive: true });
   $("#select-all").addEventListener("click", () => { selection = new Set(tabItems().map((item) => item.id)); renderSelection(); });
   $("#select-section").addEventListener("click", () => {
     const selectedSections = activeTab().sections.filter((section) => section.items.some((item) => selection.has(item.id)));
@@ -1352,7 +1471,7 @@
       if (event.key === "ArrowRight") { event.preventDefault(); stepViewer(1); }
       return;
     }
-    if (editor.open) return;
+    if (editor.open || deleteWarning.open) return;
     if (event.key === "Escape") {
       if (gesture) endGesture(true);
       else { selection.clear(); renderSelection(); }

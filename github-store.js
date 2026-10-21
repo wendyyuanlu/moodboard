@@ -131,7 +131,7 @@ const MoodboardGitHub = (() => {
       return { revision: record.revision, board };
     }
     async function write(expectedRevision, board) {
-      if (!token) throw new SaveError(401, "Connect GitHub in Settings to upload this device's pending edits.");
+      if (!token) throw new SaveError(401, "Enable auto-sync in Settings to upload this device's pending edits.");
       const prepared = await prepareBoard(board), current = await loadMeta();
       if (prepared.revision === current.revision) return { revision: current.revision };
       if (expectedRevision !== current.revision) throw new SaveError(409, "Someone else saved a newer shared board. Your local changes are safe. Resolve the conflict in Settings.");

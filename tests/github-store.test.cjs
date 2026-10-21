@@ -56,6 +56,8 @@ test("invalid packages and unsafe metadata are rejected before any GitHub call",
   const remote = mockGitHub(), store = storeFor(remote);
   for (const change of [
     (data) => { data.state.tabs[0].sections[0].items[0].sourceUrl = "javascript:alert(1)"; },
+    (data) => { data.state.tabs[0].sections[0].items[0].sourceImageUrl = "javascript:alert(1)"; },
+    (data) => { data.state.tabs[0].sections[0].items[0].sourceImageUrl = 42; },
     (data) => { data.assets[0][1].data = "data:image/png;base64,SGVsbG8="; },
     (data) => { data.state.tabs[0].sections[0].items[0].crop = { x: .8, y: 0, width: .5, height: 1 }; },
     (data) => { data.assets.push(data.assets[0]); },

@@ -27,7 +27,9 @@ const MoodboardFormat = (() => {
         unique(section.id);
         for (const item of section.items) {
           if (!item || !text(item.title, 300, true) || !text(item.notes, 10000) || !assetMap.has(item.assetId)) fail();
-          if (item.sourceUrl !== undefined && (!text(item.sourceUrl, 8192) || (item.sourceUrl !== "" && !sourcePageURL(item.sourceUrl)))) fail();
+          for (const key of ["sourceUrl", "sourceImageUrl"]) {
+            if (item[key] !== undefined && (!text(item[key], 8192) || (item[key] !== "" && !sourcePageURL(item[key])))) fail();
+          }
           if (item.crop !== undefined && !validCrop(item.crop)) fail();
           unique(item.id);
         }

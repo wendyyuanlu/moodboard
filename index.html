@@ -43,6 +43,10 @@ main{max-width:none;padding-inline:clamp(12px,2vw,32px)}.app-header,footer{paddi
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 .card-tool svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;vertical-align:middle}
 .image-hit .cropped-preview{display:block;width:100%;height:auto;pointer-events:none}
+#viewer-stage{padding-inline:0}
+.board-header{position:sticky;top:0;z-index:4;background:var(--paper);transition:transform .18s ease}
+.board-header.shy-hidden{transform:translateY(calc(-100% - 1px));pointer-events:none}
+.dragging .board-header,.selecting .board-header{transition:none}
 .images[data-layout=grid] .cropped-preview{aspect-ratio:1;background:#eeede6}
 .images[data-layout=list] .cropped-preview{width:min(var(--tile-size),40%);height:calc(var(--tile-size)*.65);background:#eeede6}
 dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14px auto 20px;overflow:hidden;touch-action:none;user-select:none;background:#eeede6;cursor:crosshair}
@@ -52,7 +56,7 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
 .toolbar-icon svg,.view-switch svg,.edit-toggle svg,.source-button svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
 .toolbar-icon,.source-button{display:inline-flex;align-items:center;justify-content:center;text-decoration:none}.source-button{flex-shrink:0}
 .view-switch{width:116px;height:38px}.view-switch button{display:flex;align-items:center;justify-content:center;flex:1;min-width:0;padding:0}.view-switch svg{width:16px;height:16px}
-.edit-toggle{width:116px;min-width:116px;height:38px;min-height:38px;padding:0;display:inline-flex;align-items:center;justify-content:center}.edit-toggle svg{transform:scaleX(-1)}
+.edit-toggle{width:38px;min-width:38px;height:38px;min-height:38px;padding:0;display:inline-flex;align-items:center;justify-content:center}.edit-toggle svg{transform:scaleX(-1)}
 .card-tools .card-tool svg{width:16px;height:16px}
 .source-field-label{display:flex;align-items:center;gap:6px;width:max-content}
 .source-go,.source-go svg{width:20px;height:20px}
@@ -65,19 +69,42 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
 .settings-editor .dialog-footer>span{display:none}
 .settings-editor .dialog-footer .button{min-height:30px;padding:7px 11px;font-size:11px}
 .dialog-extra>.field{flex-basis:100%;margin-top:18px}
-.header-actions{flex-wrap:wrap;justify-content:flex-end}
-@media(max-width:600px){#save-status{display:block;flex-basis:100%;text-align:right}}
+.app-header{justify-content:space-between;gap:8px;min-height:64px;flex-wrap:nowrap}
+.header-start{display:flex;align-items:center;gap:0;flex-shrink:0}
+.header-actions{flex-wrap:nowrap;justify-content:flex-end;gap:8px;min-width:0}
+.header-actions #save-status{display:block;flex:0 1 auto;max-width:110px;font-size:10px;line-height:1.4;text-align:right}
+.settings-editor .dialog-heading{position:absolute;top:6px;right:8px}
+.settings-manage>.guide-heading{margin-top:0;padding-right:35px}
+.manage-actions,.destructive-actions{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.manage-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.github-login{text-decoration:none;color:inherit}
+.destructive-actions>.guide-heading{font-size:11px;margin:14px 0 0}
+.delete-skip-label{display:flex;align-items:center;flex-wrap:wrap;gap:6px;font-size:12px}
+#delete-skip{width:75px;padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:inherit}
+.delete-warning-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+.auto-sync-link{color:var(--accent);text-decoration:underline}
+.github-action:disabled,.github-login[aria-disabled=true],.auto-sync-link[aria-disabled=true]{opacity:.45;cursor:not-allowed}
+.github-login[aria-disabled=true],.auto-sync-link[aria-disabled=true]{pointer-events:none}
+.empty-section{padding:0}
+.empty-section .section-end{width:100%;min-height:132px;margin:0;padding:24px;border:0;background:transparent}
+.empty-section .section-end span{font-size:24px;opacity:1}
+.empty-section .section-end.chosen{outline:2px solid var(--accent);outline-offset:-2px;color:var(--accent)}
+.bottom-add{display:block;width:100%;text-align:center}
+#notice:has(.auto-sync-link){pointer-events:auto}
+.sync-check{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-left:5px;color:var(--accent);font-size:14px}
+.icon-button svg,.toolbar-icon svg,.view-switch svg,.edit-toggle svg,.source-button svg,.card-tools .card-tool svg,.selection-bar svg,.viewer-button svg,.chevron svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;vertical-align:middle}
+@media(max-width:600px){.header-actions .button{font-size:10px;padding:10px 8px}}
 </style>
 </head>
 <body>
 <header class="app-header">
-<a class="brand" href="#" aria-label="moodboard home"><span class="brand-symbol" aria-hidden="true">▦</span>moodboard<span class="brand-dot">.</span></a>
-<span class="tagline">a little space for inspiration</span>
-<div class="header-actions"><span id="save-status" role="status">Opening your space…</span><button id="save-portable" class="button">↓ Save portable copy</button><button id="add-images" class="icon-button edit-control toolbar-icon" aria-label="Add images" title="Add images"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H3v18h18V10M17 3h6M20 0v6M3 17l6-6 5 5 3-3 4 4"/><circle cx="8" cy="7" r="1"/></svg></button><button id="more" class="icon-button" aria-label="Settings and backups">☷</button></div>
+<div class="header-start"><button id="more" class="icon-button" aria-label="Settings and backups"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18M3 12h18M3 19h18"/></svg></button><button id="add-images" class="icon-button edit-control toolbar-icon" aria-label="Add images" title="Add images"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H3v18h18V10M17 3h6M20 0v6M3 17l6-6 5 5 3-3 4 4"/><circle cx="8" cy="7" r="1"/></svg></button></div>
+<div class="header-actions"><span id="save-status" role="status">Opening your space…</span><button id="save-portable" class="button">↓ Save portable copy</button></div>
 </header>
 <main>
 <section class="intro" hidden><div><p class="eyebrow">COLLECT. CONNECT. CREATE.</p><h1>Your ideas, <em>all together.</em></h1><p class="subtitle">Paste a moment. Keep a feeling. Make it yours.</p></div></section>
-<div class="tabs-row"><nav id="tabs" aria-label="Moodboard tabs"></nav><button id="new-tab" class="icon-button edit-control" aria-label="Add tab">+</button></div>
+<div id="board-header" class="board-header">
+<div class="tabs-row"><nav id="tabs" aria-label="Moodboard tabs"></nav><button id="new-tab" class="icon-button edit-control" aria-label="Add tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M4 12h16"/></svg></button></div>
 <section class="board-toolbar">
 <div class="layout-tools"><div class="view-switch" role="group" aria-label="Layout">
 <button data-layout="masonry" aria-label="Masonry" title="Masonry" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="11" rx="1"/><rect x="14" y="3" width="7" height="6" rx="1"/><rect x="3" y="18" width="7" height="3" rx="1"/><rect x="14" y="13" width="7" height="8" rx="1"/></svg></button>
@@ -85,13 +112,13 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
 <button data-layout="list" aria-label="List" title="List" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h12M9 12h12M9 19h12M3 5h1M3 12h1M3 19h1"/></svg></button>
 </div><label class="zoom-label"><input id="zoom" type="range" min="100" max="420" step="10" value="220" aria-label="Image display size"></label><button id="edit-toggle" class="icon-button edit-toggle" aria-label="Turn editing off" title="Editing on — click to turn off" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14z"/></svg></button></div>
 </section>
+</div>
 <aside id="paste-toolbar" class="paste-toolbar edit-control" hidden><span class="paste-icon" aria-hidden="true">↳</span><span id="paste-location">Paste at the bottom</span><button id="paste-button" class="text-button">Paste</button><button id="paste-bottom" class="text-button">Append at bottom</button><button id="new-section" class="text-button">+ Section</button></aside>
 <div id="storage-warning" class="warning" role="alert" hidden></div>
 <div id="sections"></div>
 <button id="bottom-add" class="bottom-add edit-control">+ Add a section</button>
-<p class="board-footnote">Original images. No compression. No account. Just your ideas.</p>
 </main>
-<footer><span>Made for your wandering mind.</span><button id="help" class="text-button">Offline & portability guide ↗</button><span id="connection-status"></span></footer>
+<footer><button id="help" class="text-button">Offline & portability guide ↗</button><span id="connection-status"></span></footer>
 <aside id="selection-bar" class="selection-bar" aria-label="Selected image actions" hidden>
 <div class="selection-summary"><strong id="selection-count"></strong><button id="clear-selection" aria-label="Clear selection" title="Clear selection"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><button id="select-all" title="Select every image in this tab">All</button>
 <button id="select-section" aria-label="Select section" title="Select all images in the sections containing selected images"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 7h10M7 12h10M7 17h10"/></svg></button>
@@ -100,8 +127,10 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
 <button id="delete-selected" aria-label="Delete selected images" title="Delete selected images"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button>
 </aside>
 <div id="rubber-band" hidden></div><div id="drag-preview" hidden></div><div id="notice" role="status" hidden></div>
-<dialog id="editor"><form id="editor-form"><div class="dialog-heading"><h2 id="editor-title"></h2><button id="close-editor" class="icon-button" type="button" aria-label="Close dialog">×</button></div><div id="editor-fields"></div><p id="editor-error" class="error" role="alert" hidden></p><div id="editor-extra" class="dialog-extra"></div><div class="dialog-footer"><button id="editor-delete" class="text-button danger" type="button" hidden>Delete</button><span></span><button id="cancel-editor" class="button" type="button">Cancel</button><button id="editor-submit" class="button primary" type="submit">Save</button></div></form></dialog>
-<dialog id="viewer" aria-label="Image viewer"><div class="viewer-header"><div><strong id="viewer-title"></strong><small id="viewer-details"></small></div><a id="viewer-source" class="viewer-button" target="_blank" rel="noopener noreferrer" hidden>Source page ↗</a><button id="viewer-zoom" class="viewer-button" aria-pressed="false">Actual size</button><a id="viewer-original" class="viewer-button" target="_blank" rel="noopener">Open original ↗</a><a id="viewer-download" class="viewer-button" download>↓</a><button id="viewer-close" class="viewer-button" aria-label="Close image viewer">×</button></div><div id="viewer-stage"><img id="viewer-image" alt=""></div><div class="viewer-footer"><button id="viewer-prev" class="viewer-button" aria-label="Previous image">←</button><span id="viewer-position"></span><button id="viewer-next" class="viewer-button" aria-label="Next image">→</button></div></dialog>
+<dialog id="editor" aria-labelledby="editor-title"><form id="editor-form">
+<div class="dialog-heading"><h2 id="editor-title"></h2><button id="close-editor" class="icon-button" type="button" aria-label="Close dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div id="editor-fields"></div><p id="editor-error" class="error" role="alert" hidden></p><div id="editor-extra" class="dialog-extra"></div><div class="dialog-footer"><button id="editor-delete" class="text-button danger" type="button" hidden>Delete</button><span></span><button id="cancel-editor" class="button" type="button">Cancel</button><button id="editor-submit" class="button primary" type="submit">Save</button></div></form></dialog>
+<dialog id="viewer" aria-label="Image viewer"><div class="viewer-header"><div><strong id="viewer-title"></strong><small id="viewer-details"></small></div><a id="viewer-source" class="viewer-button" target="_blank" rel="noopener noreferrer" hidden>Source page ↗</a><button id="viewer-zoom" class="viewer-button" aria-pressed="false">Actual size</button><a id="viewer-original" class="viewer-button" target="_blank" rel="noopener">Open original ↗</a><a id="viewer-download" class="viewer-button" download aria-label="Download original"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg></a><button id="viewer-close" class="viewer-button" aria-label="Close image viewer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div id="viewer-stage"><img id="viewer-image" alt=""></div><div class="viewer-footer"><button id="viewer-prev" class="viewer-button" aria-label="Previous image"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12H4m7-7-7 7 7 7"/></svg></button><span id="viewer-position"></span><button id="viewer-next" class="viewer-button" aria-label="Next image"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16m-7-7 7 7-7 7"/></svg></button></div></dialog>
+<dialog id="delete-warning" aria-labelledby="delete-warning-title"><form id="delete-warning-form"><h2 id="delete-warning-title">Delete images?</h2><p id="delete-warning-message"></p><label class="delete-skip-label" for="delete-skip">Do not show for the next <input id="delete-skip" type="number" min="0" max="9007199254740991" step="1" value="0" required aria-label="Delete clicks without a warning"> delete clicks</label><p class="hint">Applies in this tab. Deleting a selection counts as one click. The warning returns after that many deletes.</p><div class="delete-warning-actions"><button id="delete-warning-cancel" class="button" type="button" autofocus>Cancel</button><button id="delete-warning-submit" class="button primary" type="submit">Delete</button></div></form></dialog>
 <input id="image-files" type="file" accept="image/*" multiple hidden><input id="backup-file" type="file" accept=".json,application/json" hidden>
 <script id="portable-data" type="application/json">null</script>
 <script id="cloud-config" type="application/json">{"site":"https://wendyyuanlu.github.io/moodboard/","owner":"wendyyuanlu","repo":"moodboard","branch":"board","collection":"wendyyuanlu/moodboard:board"}</script>
@@ -134,7 +163,9 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
         unique(section.id);
         for (const item of section.items) {
           if (!item || !text(item.title, 300, true) || !text(item.notes, 10000) || !assetMap.has(item.assetId)) fail();
-          if (item.sourceUrl !== undefined && (!text(item.sourceUrl, 8192) || (item.sourceUrl !== "" && !sourcePageURL(item.sourceUrl)))) fail();
+          for (const key of ["sourceUrl", "sourceImageUrl"]) {
+            if (item[key] !== undefined && (!text(item[key], 8192) || (item[key] !== "" && !sourcePageURL(item[key])))) fail();
+          }
           if (item.crop !== undefined && !validCrop(item.crop)) fail();
           unique(item.id);
         }
@@ -286,7 +317,7 @@ const MoodboardGitHub = (() => {
       return { revision: record.revision, board };
     }
     async function write(expectedRevision, board) {
-      if (!token) throw new SaveError(401, "Connect GitHub in Settings to upload this device's pending edits.");
+      if (!token) throw new SaveError(401, "Enable auto-sync in Settings to upload this device's pending edits.");
       const prepared = await prepareBoard(board), current = await loadMeta();
       if (prepared.revision === current.revision) return { revision: current.revision };
       if (expectedRevision !== current.revision) throw new SaveError(409, "Someone else saved a newer shared board. Your local changes are safe. Resolve the conflict in Settings.");
@@ -339,6 +370,8 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   const clone = (value) => structuredClone(value);
   const editor = $("#editor");
   const viewer = $("#viewer");
+  const deleteWarning = $("#delete-warning");
+  let deleteSkipsRemaining = 0, deleting = false;
   let state, db, assets = new Map(), urls = new Map();
   let editable = true, selection = new Set(), cursor = null, editorAction, editorDelete, editorSuccess;
   let queue = Promise.resolve(), pending = 0, memoryOnly = false, dirty = false;
@@ -366,9 +399,12 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     node.addEventListener("click", action);
     return node;
   }
+  function setIcon(node, shapes) {
+    node.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${shapes}</svg>`;
+  }
   function notify(message) {
     clearTimeout(noticeTimer);
-    $("#notice").textContent = message;
+    syncText($("#notice"), message);
     $("#notice").hidden = false;
     noticeTimer = setTimeout(() => { $("#notice").hidden = true; }, 7000);
   }
@@ -412,9 +448,19 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     const openGraph = template.content.querySelector('meta[property="og:url"][content]');
     return sourcePageURL(canonical?.getAttribute("href")) || sourcePageURL(openGraph?.getAttribute("content"));
   }
+  function clipboardSourceImage(html) {
+    const template = document.createElement("template"); template.innerHTML = html;
+    const base = clipboardSourcePage(html);
+    const sources = new Set([...template.content.querySelectorAll("img[src]")].map((image) => {
+      const value = image.getAttribute("src");
+      if (!value?.trim()) return "";
+      try { return sourcePageURL(new URL(value, base || undefined).href); } catch { return ""; }
+    }).filter(Boolean));
+    return sources.size === 1 ? [...sources][0] : "";
+  }
   function initialState() {
     const tabId = uid();
-    return { schema: 1, id: uid(), revision: 0, activeTab: tabId, settings: { layout: "masonry", zoom: matchMedia("(max-width: 600px)").matches ? 150 : 220, theme: "light", accent: "#637554", showCaptions: true, showFilenames: false, showUrls: true },
+    return { schema: 1, id: uid(), revision: 0, activeTab: tabId, settings: { layout: "masonry", zoom: matchMedia("(max-width: 600px)").matches ? 150 : 220, theme: "light", accent: "#637554", showCaptions: false, showFilenames: false, showUrls: true },
       tabs: [{ id: tabId, name: "My inspiration", sections: [{ id: uid(), name: "The little things", collapsed: false, items: [] }] }] };
   }
   function openDB() {
@@ -463,11 +509,38 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     if (cloudEnabled) {
       status = cloudConflict ? "Save conflict · kept on device" : cloudSaving ? "Saving to GitHub…"
         : cloudError ? cloudInfo.revision || allItems().length ? "Saved here · GitHub unavailable" : "Could not load GitHub board" : !cloudReady ? "Connecting to shared board…"
-        : cloudInfo.dirty ? github.connected ? "Saved here · waiting for GitHub" : "Saved here · connect GitHub" : "Saved to GitHub";
+        : cloudInfo.dirty ? github.connected ? "Saved here · waiting for GitHub" : "Saved here · Enable auto-sync" : "Saved to GitHub";
       if (memoryOnly && cloudInfo.dirty) status = "In memory · export a backup";
     }
-    $("#save-status").textContent = pending ? "Saving…" : status;
+    syncText($("#save-status"), pending ? "Saving…" : status);
     $("#save-portable").disabled = pending > 0 || !state || Boolean(cloudEnabled && !cloudReady && !cloudInfo.revision && !allItems().length);
+  }
+  function syncText(node, text) {
+    const label = "Enable auto-sync";
+    if (!cloudEnabled || !text.includes(label)) { node.textContent = text; return; }
+    if (node.textContent === text && node.querySelector(".auto-sync-link")) return;
+    node.replaceChildren();
+    text.split(label).forEach((part, index) => {
+      if (index) {
+        const link = el("a", "auto-sync-link", label); link.href = "#enable-auto-sync";
+        link.addEventListener("click", (event) => { event.preventDefault(); if (navigator.onLine) connectGitHub(); });
+        node.append(link);
+      }
+      node.append(document.createTextNode(part));
+    });
+    updateGitHubControls();
+  }
+  function updateGitHubControls() {
+    const unavailable = !navigator.onLine ? "Reconnect to the internet to use GitHub."
+      : !cloudEnabled ? "GitHub sync is available on the published website. Local and portable copies save on this device." : "";
+    for (const control of $$(".github-action")) {
+      control.disabled = Boolean(unavailable) || $("#editor-submit").disabled;
+      control.title = unavailable || (control.querySelector(".sync-check") ? "Auto-sync is enabled for this tab" : "");
+    }
+    for (const link of $$(".github-login, .auto-sync-link")) {
+      link.setAttribute("aria-disabled", String(!navigator.onLine)); link.tabIndex = navigator.onLine ? 0 : -1;
+      link.title = navigator.onLine ? "" : unavailable;
+    }
   }
   function enqueue(action) {
     pending++; setSaveStatus();
@@ -590,11 +663,6 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     renderTabs();
     masonryObserver.disconnect();
     $("#sections").replaceChildren(...current.sections.map(renderSection));
-    if (!current.sections.length) {
-      const empty = el("div", "empty-section");
-      empty.append(el("strong", "", "A little room for possibility."), el("p", "", "Add a section, or paste an image to start collecting."));
-      $("#sections").append(empty);
-    }
     renderCursor(); renderSelection(); setSaveStatus();
     masonryObserver.observe($("#sections"));
     for (const card of $$(".image-card")) masonryObserver.observe(card);
@@ -638,10 +706,12 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     const header = el("div", "section-header");
     const toggle = button("", () => mutate((next) => { findSection(section.id, next).collapsed = !findSection(section.id, next).collapsed; }), "section-toggle");
     toggle.setAttribute("aria-expanded", String(!section.collapsed));
-    toggle.append(el("span", "chevron", "▾"), el("strong", "", section.name), el("small", "", String(section.items.length)));
+    const chevron = el("span", "chevron"); setIcon(chevron, '<path d="m6 9 6 6 6-6"/>');
+    toggle.append(chevron, el("strong", "", section.name), el("small", "", String(section.items.length)));
     const actions = el("div", "section-actions edit-control");
     const add = button("+ Add", () => { setCursor(section.id); $("#image-files").click(); });
     const edit = button("···", () => openSection(section), "icon-button");
+    setIcon(edit, '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>');
     edit.setAttribute("aria-label", `Edit section ${section.name}`);
     actions.append(add, edit);
     header.append(toggle, actions); node.append(header);
@@ -650,12 +720,12 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     const images = el("div", "images"); images.dataset.layout = state.settings.layout;
     for (const item of section.items) images.append(renderItem(item, section.id));
     body.append(images);
+    const end = slot(section.id, null, `Paste at end of ${section.name}`, "section-end");
     if (!section.items.length) {
-      const empty = el("div", "empty-section");
-      empty.append(el("strong", "", "Good things start here."), el("p", "", "Paste an image anywhere, or add photos from your device."));
+      const empty = el("div", "empty-section edit-control");
+      empty.append(end);
       body.append(empty);
-    }
-    body.append(slot(section.id, null, `Paste at end of ${section.name}`, "section-end"));
+    } else body.append(end);
     node.append(body);
     return node;
   }
@@ -709,7 +779,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       link.hidden = state.settings.showUrls === false;
       caption.append(link);
     }
-    caption.hidden = state.settings.showCaptions === false || (filename.hidden && (!sourceUrl || state.settings.showUrls === false));
+    caption.hidden = !(state.settings.showCaptions ?? false) || (filename.hidden && (!sourceUrl || state.settings.showUrls === false));
     hit.append(img);
     const check = el("input", "select-image"); check.type = "checkbox";
     check.setAttribute("aria-label", `Select ${item.title}`);
@@ -720,14 +790,17 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       if (performance.now() >= suppressClickUntil) { selection.add(item.id); renderSelection(); notify("Hold and drag to rearrange, or use Move to… below."); }
     }, "card-tool drag-handle");
     drag.setAttribute("aria-label", `Drag ${item.title}`);
+    setIcon(drag, '<circle cx="8" cy="5" r="1"/><circle cx="16" cy="5" r="1"/><circle cx="8" cy="12" r="1"/><circle cx="16" cy="12" r="1"/><circle cx="8" cy="19" r="1"/><circle cx="16" cy="19" r="1"/>');
     const remove = button("×", () => { removeItems([item.id]).catch(report); }, "card-tool danger");
     remove.setAttribute("aria-label", `Delete image ${item.title}`);
     remove.title = "Delete image";
+    setIcon(remove, '<path d="m6 6 12 12M18 6 6 18"/>');
     const crop = button("", () => openCrop(item.id), "card-tool");
     crop.setAttribute("aria-label", `Crop image ${item.title}`); crop.title = "Crop image";
     crop.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v15h15M3 6h15v15M10 6h8v8"/></svg>';
     const edit = button("···", () => openImage(item.id), "card-tool");
     edit.setAttribute("aria-label", `Edit image ${item.title}`);
+    setIcon(edit, '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>');
     tools.append(drag, remove, crop);
     const sourceButton = sourceLink(item, "card-tool source-button");
     if (sourceButton) tools.append(sourceButton);
@@ -751,14 +824,16 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     control.value = value; label.append(control); $("#editor-fields").append(label);
     return control;
   }
-  function hint(text) { $("#editor-fields").append(el("p", "hint", text)); }
+  function hint(text) { const node = el("p", "hint"); syncText(node, text); $("#editor-fields").append(node); }
   function openEditor(title, save, remove) {
     $("#editor-form").append($(".dialog-footer"));
+    $("#crop-reset")?.remove();
     editor.classList.remove("crop-editor", "settings-editor");
     editorSuccess = "Saved to your space.";
     editorAction = save; editorDelete = remove;
     $("#editor-form").reset(); $("#editor-fields").replaceChildren(); $("#editor-extra").replaceChildren();
     $("#editor-title").textContent = title; $("#editor-error").hidden = true;
+    $("#editor-title").hidden = false;
     $("#editor-delete").hidden = !remove;
     $("#editor-submit").hidden = !save;
     $("#cancel-editor").textContent = save ? "Cancel" : "Done";
@@ -861,11 +936,9 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     const item = allItems().find((entry) => entry.id === itemId);
     const asset = assets.get(item.assetId);
     let crop = clone(item.crop || { x: 0, y: 0, width: 1, height: 1 }), drag;
-    const fromFields = () => Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value === "" ? NaN : Number(input.value) / 100]));
-    const cropError = "Enter a non-empty crop inside the image: Left + Width and Top + Height must each be at most 100%.";
-    openEditor(`Crop ${item.title}`, async () => {
-      const saved = fromFields();
-      if (!validCrop(saved)) throw new Error(cropError);
+    openEditor("Crop image", async () => {
+      const saved = clone(crop);
+      if (!validCrop(saved)) throw new Error("Choose a non-empty crop inside the original image.");
       await enqueue(() => commit((next) => {
         const target = allItems(next).find((entry) => entry.id === itemId);
         if (!target) throw new Error("This image is no longer in the collection.");
@@ -874,32 +947,32 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       }));
     });
     editor.classList.add("crop-editor");
-    hint("Drag on the original to draw a crop. Drag inside the frame to move it, or use its corners to resize. Only the board view changes; opening the image still shows the original.");
     const stage = el("div", "crop-stage");
     stage.style.aspectRatio = `${asset.width} / ${asset.height}`;
     stage.style.width = `min(100%, ${50 * asset.width / asset.height}vh)`;
     const original = el("img"); original.src = imageURL(item.assetId); original.alt = `Full original: ${item.title}`; original.draggable = false;
     original.addEventListener("error", () => showEditorError(new Error("Could not load the original image. Cancel and try again.")), { once: true });
     const frame = el("div", "crop-frame");
+    frame.tabIndex = 0; frame.setAttribute("role", "group");
+    frame.setAttribute("aria-label", "Crop selection. Arrow keys move; Shift and arrow keys resize in one-percent steps.");
     for (const corner of ["nw", "ne", "sw", "se"]) {
       const handle = el("span", "crop-handle"); handle.dataset.corner = corner; handle.setAttribute("aria-hidden", "true"); frame.append(handle);
     }
     stage.append(original, frame); $("#editor-fields").append(stage);
-    const inputs = {};
-    for (const [key, label] of [["x", "Left (%)"], ["y", "Top (%)"], ["width", "Width (%)"], ["height", "Height (%)"]]) {
-      const input = field(label, `crop-${key}`, "", "number");
-      input.min = 0; input.max = 100; input.step = "any"; input.required = true; inputs[key] = input;
-      input.addEventListener("input", () => {
-        const next = fromFields();
-        $("#editor-error").hidden = Boolean(validCrop(next));
-        if (validCrop(next)) { crop = next; paint(false); }
-        else $("#editor-error").textContent = cropError;
-      });
-    }
-    function paint(updateFields = true) {
+    function paint() {
       Object.assign(frame.style, { left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` });
-      if (updateFields) for (const [key, input] of Object.entries(inputs)) input.value = String(crop[key] * 100);
     }
+    frame.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      const horizontal = ["ArrowLeft", "ArrowRight"].includes(event.key);
+      const key = event.shiftKey ? horizontal ? "width" : "height" : horizontal ? "x" : "y";
+      const minimum = event.shiftKey ? 1 / (horizontal ? asset.width : asset.height) : 0;
+      const maximum = event.shiftKey ? 1 - crop[horizontal ? "x" : "y"] : 1 - crop[horizontal ? "width" : "height"];
+      const delta = ["ArrowLeft", "ArrowUp"].includes(event.key) ? -.01 : .01;
+      crop[key] = Math.max(minimum, Math.min(maximum, Number((crop[key] + delta).toFixed(8))));
+      $("#editor-error").hidden = true; paint();
+    });
     const point = (event) => {
       const rect = stage.getBoundingClientRect();
       return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) };
@@ -934,7 +1007,8 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
     };
     stage.addEventListener("pointerup", end); stage.addEventListener("pointercancel", end); stage.addEventListener("lostpointercapture", end);
-    $("#editor-extra").append(button("Reset crop", () => { crop = { x: 0, y: 0, width: 1, height: 1 }; $("#editor-error").hidden = true; paint(); }, "button"));
+    const reset = button("Reset crop", () => { crop = { x: 0, y: 0, width: 1, height: 1 }; $("#editor-error").hidden = true; paint(); }, "button");
+    reset.id = "crop-reset"; $(".dialog-footer").prepend(reset);
     paint();
   }
   function openImage(itemId) {
@@ -1007,15 +1081,41 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     hint("The selected images keep their relative order. Copies share the original bytes without doubling local storage.");
   }
   async function removeItems(ids) {
-    if (!confirm(`Delete ${ids.length} ${ids.length === 1 ? "image" : "images"}? This cannot be undone.`)) return false;
-    const wanted = new Set(ids);
-    await enqueue(() => commit((next) => {
-      for (const section of sections(next)) section.items = section.items.filter((item) => !wanted.has(item.id));
-    }));
-    selection.clear(); renderSelection();
+    if (deleting) { notify("Finish the current deletion first."); return false; }
+    deleting = true;
+    try {
+      const skipped = deleteSkipsRemaining > 0;
+      let allowance = deleteSkipsRemaining;
+      if (!skipped) {
+        $("#delete-warning-form").reset(); $("#delete-skip").setCustomValidity("");
+        $("#delete-warning-message").textContent = `Delete ${ids.length} ${ids.length === 1 ? "image" : "images"}? This cannot be undone.`;
+        deleteWarning.returnValue = "";
+        allowance = await new Promise((resolve) => {
+          deleteWarning.addEventListener("close", () => resolve(deleteWarning.returnValue === "delete" ? Number($("#delete-skip").value) : null), { once: true });
+          deleteWarning.showModal();
+        });
+        if (allowance === null) return false;
+      }
+      const wanted = new Set(ids);
+      await enqueue(() => commit((next) => {
+        for (const section of sections(next)) section.items = section.items.filter((item) => !wanted.has(item.id));
+      }));
+      deleteSkipsRemaining = skipped ? allowance - 1 : allowance;
+      selection.clear(); renderSelection();
+    } finally { deleting = false; }
   }
+  $("#delete-warning-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const input = $("#delete-skip"), count = Number(input.value);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      input.setCustomValidity("Enter a whole number of delete clicks, zero or greater."); input.reportValidity(); return;
+    }
+    deleteWarning.close("delete");
+  });
+  $("#delete-skip").addEventListener("input", (event) => event.target.setCustomValidity(""));
+  $("#delete-warning-cancel").addEventListener("click", () => deleteWarning.close("cancel"));
   function showEditorError(error) {
-    console.error(error); $("#editor-error").textContent = errorMessage(error); $("#editor-error").hidden = false;
+    console.error(error); syncText($("#editor-error"), errorMessage(error)); $("#editor-error").hidden = false;
   }
 
   async function readImage(file) {
@@ -1047,7 +1147,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       throw new Error(`Could not read “${file.name || "pasted image"}”. Choose an image supported by this browser.`, { cause: error });
     }
   }
-  function addFiles(files, target = cursor && { ...cursor }, sourceUrls = []) {
+  function addFiles(files, target = cursor && { ...cursor }, sourceUrls = [], sourceImageUrls = []) {
     if (!editable) { notify("Turn Edit on to add images."); return; }
     const list = [...files];
     if (!list.length) { notify("No image files found. Copy an image or use Add images."); return; }
@@ -1056,7 +1156,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       for (const [index, file] of list.entries()) {
         const asset = await readImage(file), assetId = uid();
         additions.set(assetId, asset);
-        items.push({ id: uid(), assetId, title: asset.name.slice(0, 300), notes: "", sourceUrl: sourceUrls[index] || "" });
+        items.push({ id: uid(), assetId, title: asset.name.slice(0, 300), notes: "", sourceUrl: sourceUrls[index] || "", sourceImageUrl: sourceImageUrls[index] || "" });
       }
       await commit((next) => insertItems(next, items, target), additions);
       const linked = items.filter((item) => item.sourceUrl).length;
@@ -1067,12 +1167,12 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     return target instanceof Element && Boolean(target.closest("input:not([type=checkbox]):not([type=range]), textarea, select, [contenteditable=true]"));
   }
   document.addEventListener("paste", (event) => {
-    if (!state || textTarget(event.target) || editor.open || viewer.open) return;
+    if (!state || textTarget(event.target) || editor.open || viewer.open || deleteWarning.open) return;
     const files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
     if (files.length) {
       event.preventDefault();
-      const sourceUrl = clipboardSourcePage(event.clipboardData.getData("text/html"));
-      addFiles(files, cursor && { ...cursor }, files.map(() => sourceUrl)); return;
+      const html = event.clipboardData.getData("text/html"), sourceUrl = clipboardSourcePage(html);
+      addFiles(files, cursor && { ...cursor }, files.map(() => sourceUrl), files.length === 1 ? [clipboardSourceImage(html)] : []); return;
     }
     if (internalClipboard.length && editable && event.clipboardData?.getData("text/plain") === "moodboard image selection") {
       event.preventDefault(); pasteInternal();
@@ -1087,16 +1187,19 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     }
     try {
       const entries = await navigator.clipboard.read();
-      const images = [], pageSources = new Set();
+      const images = [], pageSources = new Set(), imageSources = new Set();
       for (const entry of entries) {
         const html = entry.types.includes("text/html") ? await (await entry.getType("text/html")).text() : "";
         const sourceUrl = clipboardSourcePage(html);
+        const sourceImageUrl = clipboardSourceImage(html);
         if (sourceUrl) pageSources.add(sourceUrl);
+        if (sourceImageUrl) imageSources.add(sourceImageUrl);
         const type = entry.types.find((type) => supportedImage.test(type));
-        if (type) images.push({ file: await entry.getType(type), sourceUrl });
+        if (type) images.push({ file: await entry.getType(type), sourceUrl, sourceImageUrl });
       }
       const commonSource = pageSources.size === 1 ? [...pageSources][0] : "";
-      if (images.length) addFiles(images.map((image) => image.file), target, images.map((image) => image.sourceUrl || commonSource));
+      const commonImageSource = images.length === 1 && imageSources.size === 1 ? [...imageSources][0] : "";
+      if (images.length) addFiles(images.map((image) => image.file), target, images.map((image) => image.sourceUrl || commonSource), images.map((image) => image.sourceImageUrl || commonImageSource));
       else if (internalClipboard.length) pasteInternal();
       else notify("No image in the clipboard. Copy an image, then paste again, or use Add images.");
     } catch (error) {
@@ -1113,7 +1216,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     })).catch(() => {});
   }
   document.addEventListener("copy", (event) => {
-    if (!state || !editable || !selection.size || textTarget(event.target) || editor.open || viewer.open) return;
+    if (!state || !editable || !selection.size || textTarget(event.target) || editor.open || viewer.open || deleteWarning.open) return;
     internalClipboard = clone(tabItems().filter((item) => selection.has(item.id)));
     event.preventDefault(); event.clipboardData.setData("text/plain", "moodboard image selection");
     notify(`${internalClipboard.length} images copied inside moodboard. Choose a location or tab and paste.`);
@@ -1136,7 +1239,9 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     $("#viewer-details").textContent = `${asset.width} × ${asset.height} · ${sizeText(asset.blob.size)} · original`;
     const image = $("#viewer-image"); image.src = url; image.alt = item.title;
     image.width = asset.width; image.height = asset.height;
-    $("#viewer-original").href = url;
+    const sourceImageUrl = sourcePageURL(item.sourceImageUrl);
+    $("#viewer-original").href = sourceImageUrl || url;
+    $("#viewer-original").title = sourceImageUrl ? "Open the source image on its website" : "Open the saved original (source image URL unavailable)";
     const sourceUrl = sourcePageURL(item.sourceUrl);
     $("#viewer-source").hidden = !sourceUrl;
     if (sourceUrl) $("#viewer-source").href = sourceUrl;
@@ -1190,6 +1295,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   }
   function startDrag() {
     if (!gesture || !editable) return;
+    revealHeader();
     gesture.dragging = true;
     if (!selection.has(gesture.itemId)) { selection.clear(); selection.add(gesture.itemId); }
     gesture.ids = tabItems().filter((item) => selection.has(item.id)).map((item) => item.id);
@@ -1223,12 +1329,13 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
         }).catch(() => {});
       }
     } else gesture.hoverTab = null;
-    const edge = 70, speed = gesture.y < edge ? -16 : gesture.y > innerHeight - edge ? 16 : 0;
+    const edge = 70, speed = hoveredTab ? 0 : gesture.y < edge ? -16 : gesture.y > innerHeight - edge ? 16 : 0;
     if (speed) window.scrollBy(0, speed);
     dragFrame = requestAnimationFrame(moveDrag);
   }
   function startSelectionBox() {
     if (!gesture || gesture.boxActive) return;
+    revealHeader();
     clearTimeout(gesture.timer);
     gesture.box = gesture.boxActive = true;
     gesture.capture = $("#sections");
@@ -1284,7 +1391,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     }
   }, true);
   $("#sections").addEventListener("pointerdown", (event) => {
-    if (!editable || event.button !== 0 || editor.open || viewer.open || pending) return;
+    if (!editable || event.button !== 0 || editor.open || viewer.open || deleteWarning.open || pending) return;
     const card = event.target.closest(".image-card");
     const fromCheckbox = Boolean(event.target.closest(".image-selection"));
     const origin = { pointerId: event.pointerId, pointerType: event.pointerType, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY,
@@ -1325,9 +1432,10 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   document.addEventListener("drop", (event) => {
     if (!event.dataTransfer?.files.length) return;
     event.preventDefault();
-    if (editor.open || viewer.open) return;
+    if (editor.open || viewer.open || deleteWarning.open) return;
     const location = dropLocation(event.clientX, event.clientY);
-    addFiles(event.dataTransfer.files, location || cursor);
+    const html = event.dataTransfer.getData("text/html"), files = [...event.dataTransfer.files];
+    addFiles(files, location || cursor, files.map(() => clipboardSourcePage(html)), files.length === 1 ? [clipboardSourceImage(html)] : []);
   });
 
   function blobToDataURL(blob) {
@@ -1416,7 +1524,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   }
   async function syncCloud() {
     if (!cloudEnabled || !state || cloudSaving || cloudConflict) return;
-    if (editor.open || viewer.open || gesture) { scheduleCloud(1500); return; }
+    if (editor.open || viewer.open || deleteWarning.open || gesture) { scheduleCloud(1500); return; }
     if (!navigator.onLine) { cloudError = "Offline. Changes are queued on this device."; setSaveStatus(); return; }
     cloudSaving = true; setSaveStatus();
     try {
@@ -1426,7 +1534,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
         const record = await cloudRequest("GET", undefined, Boolean(cloudInfo.revision));
         let deferred = false;
         await enqueue(async () => {
-          if (editor.open || viewer.open || gesture) { deferred = true; return; }
+          if (editor.open || viewer.open || deleteWarning.open || gesture) { deferred = true; return; }
           if (record) {
             if (record.board === null && record.revision === null) {
               cloudInfo.revision = null; cloudInfo.dirty = true; await saveCloudMeta();
@@ -1490,11 +1598,11 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     if (!cloudConflict) scheduleCloud(0);
   }
   function connectGitHub() {
-    openEditor("Connect GitHub", async (form) => {
+    openEditor("Enable auto-sync", async (form) => {
       await github.connect(form.get("githubToken"));
       cloudReady = false; cloudError = ""; scheduleCloud(0);
     });
-    editorSuccess = "Connected to GitHub. Pending edits will upload automatically.";
+    editorSuccess = "Auto-sync enabled. Pending edits will upload automatically.";
     hint("Sign in to GitHub and create a fine-grained access token restricted to the moodboard repository, with Contents: Read and write. This is GitHub token authentication, not a separate moodboard account.");
     const setup = el("a", "button");
     setup.href = `https://github.com/settings/personal-access-tokens/new?name=Moodboard&target_name=${encodeURIComponent(cloudConfig.owner)}&contents=write&expires_in=30`;
@@ -1521,6 +1629,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       for (const manifest of html.querySelectorAll("link[rel=manifest]")) manifest.remove();
       find("#portable-data").textContent = JSON.stringify(data).replace(/</g, "\\u003c");
       find("#cloud-config").textContent = "null";
+      find("#board-header").classList.remove("shy-hidden");
       find("#editor-form").append(find(".dialog-footer"));
       for (const selector of ["#sections", "#tabs", "#editor-fields", "#editor-extra"]) find(selector).replaceChildren();
       for (const node of html.querySelectorAll("dialog")) node.removeAttribute("open");
@@ -1549,15 +1658,15 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   function guide() {
     openEditor("Take your inspiration anywhere", null);
     const paragraphs = [
-      ["Add quickly", "Press Ctrl+V / ⌘V anywhere outside a text field. Choose a “Paste here” gap first. The paste toolbar is hidden; Paste images and Append at bottom are in Settings and backups. Use the header image-plus icon for your photo library. Consecutive pastes keep their order."],
+      ["Add quickly", "Press Ctrl+V / ⌘V anywhere outside a text field. Choose a “Paste here” gap first, or the end-of-section gap to append. Use the header image-plus icon for your photo library. Consecutive pastes keep their order."],
       ["Source pages", "When the clipboard includes an explicit source-page URL or canonical page metadata, it is saved with the image. Image URLs are not mistaken for page URLs. Screenshots and most copied images omit the page address; add or correct it in the image’s details menu. Source page opens that link from the viewer. Links stay in offline saves and backups, but opening the source website requires internet."],
-      ["Captions", "Settings and backups starts with Caption switches for the entire caption, filenames, and URLs. Save to apply. Missing URLs have no placeholder text. Images with a source page also have a link icon on their hover controls and in their details menu, even if captions are hidden."],
+      ["Captions", "Below Manage in Settings and backups are Caption switches for the entire caption, filenames, and URLs. Save to apply. Missing URLs have no placeholder text. Images with a source page also have a link icon on their hover controls and in their details menu, even if captions are hidden."],
       ["Organize", "Grid and List always show selection checkboxes while editing. On desktop, quickly drag from an image, checkbox, or empty space to select a rectangle; hold Ctrl/Command/Shift to add to the selection. All selects the current tab; the section icon expands selection to every represented section. Hold an image to rearrange it instead; on phones use its dotted grip. Move provides an accessible alternative."],
-      ["Crop without losing originals", "Use an image's crop icon. The editor always shows the full original: draw a crop, move its frame, resize its corners, or enter percentages. Reset crop restores the full view; Cancel discards changes. Crops only affect the board, never original downloads or the full-image viewer, and are included in backups and portable copies."],
+      ["Crop without losing originals", "Use an image's crop icon. The editor always shows the full original: draw a crop, move its frame, or resize its corners. Keyboard users can focus the frame: arrows move it and Shift+arrows resize in one-percent steps. Reset crop, Cancel, and Save share the bottom bar. Crops only affect the board, never original downloads or the full-image viewer, and are included in backups and portable copies."],
       ["Tabs & sections", "Double-click a tab to rename, reposition, duplicate, or delete it. You can also focus it and press F2, or touch and hold it on a phone. Editing must be on. Use a section’s dots menu to organize that section."],
       ["Save to computer or USB", "Save portable copy downloads a single HTML file containing the app, every original image, and your organization. Open it on a computer without internet. It is a snapshot: after editing, save a NEW portable copy. The app cannot silently rewrite files on your USB."],
       ["On your phone", "For reliable phone use, open the hosted HTTPS site while online, then use your browser’s Add to Home Screen / Install option and import a JSON backup. Open it once to finish caching before going offline. Mobile Files apps may only preview local HTML rather than run it; portable HTML is not a guaranteed phone installation method."],
-      ["GitHub autosave", "The published board is publicly viewable. To upload changes, use Settings and backups → Connect GitHub with a fine-grained token restricted to the moodboard repository and Contents: Read and write. The token lives only in this open tab and is sent only to GitHub; reconnect after a reload. Changes upload automatically, including removal of an original file when its last placement is deleted. Earlier copies remain in Git history. Conflicts keep your local changes until you resolve them in Settings."],
+      ["GitHub autosave", "The published board is publicly viewable. To upload changes, use Settings and backups → Enable auto-sync with a fine-grained token restricted to the moodboard repository and Contents: Read and write. The token lives only in this open tab and is sent only to GitHub; enable it again after a reload. Changes upload automatically, including removal of an original file when its last placement is deleted. Earlier copies remain in Git history. Conflicts keep your local changes until you resolve them in Settings."],
       ["Offline & storage", "Original bytes are never resized or compressed. The shared site caches full originals and queues offline changes in this browser. Private browsing may discard storage, so keep backups. Save portable copy embeds ALL originals from ALL tabs and sections, including collapsed sections and the uncropped originals, plus organization and metadata. It needs no internet, GitHub login, or companion files. Portable copies contain no token and do not automatically publish; import their JSON backup on the hosted site to bring edits back. Large collections require substantial memory during export."],
       ["Selection & editing", "Editing is on by default each time the app opens. Use the pencil beside Masonry/Grid/List to toggle editing. Turning it off protects against accidental changes. Click an image to open the original-resolution viewer. Use arrows or swipe to browse; Actual size allows panning. Copy to… duplicates images between sections/tabs; Ctrl+C / ⌘C and paste also work within the open app."],
       ["Before your flight", "Import or paste your images, save a portable copy AND a JSON backup, then test the app in airplane mode on the device you’ll use. An offline installation is ready only when the status says “Offline ready”."]
@@ -1567,14 +1676,60 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     }
   }
   function settings() {
-    openEditor("Make yourself at home", async (form) => {
+    openEditor("Settings", async (form) => {
       await enqueue(() => commit((next) => {
         next.settings.accent = form.get("accent");
         for (const key of ["showCaptions", "showFilenames", "showUrls"]) next.settings[key] = form.has(key);
       }));
     });
     editor.classList.add("settings-editor");
-    for (const [key, label, fallback] of [["showCaptions", "Caption", true], ["showFilenames", "Show filenames", false], ["showUrls", "Show URLs", true]]) {
+    $("#editor-title").hidden = true;
+    const manage = el("section", "settings-manage"), actions = el("div", "dialog-extra manage-actions");
+    manage.append(el("h3", "guide-heading", "Manage"), actions); $("#editor-fields").append(manage);
+    {
+      const connection = el("div", "manage-row");
+      if (!github?.connected) {
+        const login = el("a", "button github-login", "Login");
+        login.addEventListener("click", (event) => { if (!navigator.onLine) event.preventDefault(); });
+        login.href = "https://github.com/login"; login.target = "_blank"; login.rel = "noopener noreferrer"; connection.append(login);
+      }
+      const enable = button("Enable auto-sync", connectGitHub, "button github-action enable-auto-sync");
+      if (github?.connected) {
+        const check = el("span", "sync-check", "✓"); check.setAttribute("aria-hidden", "true"); enable.append(check);
+        enable.title = "Auto-sync is enabled for this tab";
+      }
+      connection.append(enable);
+      if (github?.connected) connection.append(button("Disconnect GitHub", () => { github.disconnect(); editor.close(); setSaveStatus(); }, "button"));
+      actions.append(connection,
+        button("Force re-sync", () => { editor.close(); scheduleCloud(0); }, "button github-action"),
+        button("Merge local with Github version", () => resolveShared("merge"), "button github-action"));
+    }
+    if (navigator.storage?.persist) actions.append(button("Protect browser storage", async () => {
+      try {
+        const granted = await navigator.storage.persist();
+        notify(granted ? "Persistent storage granted. Still keep a portable backup." : "Your browser did not grant persistent storage. Export backups regularly.");
+      } catch (error) { report(error); }
+    }, "button"));
+    const backups = el("div", "manage-row");
+    backups.append(button("Export JSON backup", exportJSON, "button"), button("Import JSON backup", () => $("#backup-file").click(), "button"));
+    actions.append(backups, button("Offline & portability guide", guide, "button"));
+    {
+      const destructive = el("div", "destructive-actions");
+      destructive.append(el("h4", "guide-heading", "Destructive actions"),
+        button("Replace Github with local version", () => resolveShared("replace"), "button danger github-action"),
+        button("Replace local with Github version", () => resolveShared("load"), "button danger github-action"));
+      manage.append(destructive);
+      const sharing = el("p", "hint");
+      syncText(sharing, cloudEnabled ? "Anyone can view. Enable auto-sync with repository write access to upload edits automatically. Originals and organization are saved to the board branch; deletions remain in Git history. Offline edits wait on this device. No separate server or tunnel is required."
+        : "GitHub sync is available on the published website. Local and portable copies save only on this device; import their JSON backup on the hosted site to bring edits back.");
+      manage.append(sharing);
+      const status = el("p", "hint");
+      syncText(status, cloudConflict ? "A newer shared version conflicts with this device. Export a backup, then choose how to resolve it." : $("#save-status").textContent);
+      manage.append(status);
+    }
+    const total = [...assets.values()].reduce((sum, asset) => sum + asset.blob.size, 0);
+    manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)}. Local autosave is not a backup; export a copy regularly.`));
+    for (const [key, label, fallback] of [["showCaptions", "Caption", false], ["showFilenames", "Show filenames", false], ["showUrls", "Show URLs", true]]) {
       const input = field(label, key, "on", "checkbox");
       input.checked = state.settings[key] ?? fallback; input.setAttribute("role", "switch"); input.closest(".field").classList.add("caption-toggle");
       if (key === "showCaptions") {
@@ -1585,28 +1740,9 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       }
     }
     $("#editor-fields").append($(".dialog-footer"));
-    if (cloudEnabled) {
-      $("#editor-fields").append(el("h3", "guide-heading", "Shared GitHub board"));
-      hint("Anyone can view. Connect GitHub with repository write access to upload edits automatically. Originals and organization are saved to the board branch; deletions remain in Git history. Offline edits wait on this device. No separate server or tunnel is required.");
-      hint(cloudConflict ? "A newer shared version conflicts with this device. Export a backup, then choose how to resolve it." : $("#save-status").textContent);
-      $("#editor-extra").append(button(github.connected ? "Reconnect GitHub" : "Connect GitHub", connectGitHub, "button"),
-        button("Retry GitHub save", () => { editor.close(); scheduleCloud(0); }, "button"),
-        button("Merge local and shared boards", () => resolveShared("merge"), "button"),
-        button("Load shared version", () => resolveShared("load"), "button"),
-        button("Replace shared with this device", () => resolveShared("replace"), "button"));
-      if (github.connected) $("#editor-extra").append(button("Disconnect GitHub", () => { github.disconnect(); editor.close(); setSaveStatus(); }, "button"));
-    }
-    const total = [...assets.values()].reduce((sum, asset) => sum + asset.blob.size, 0);
-    hint(`${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)}. Local autosave is not a backup; export a copy regularly.`);
-    $("#editor-extra").append(button("Paste images", () => { editor.close(); pasteFromButton(); }, "button"), button("Append at bottom", () => { editor.close(); appendAtBottom(); }, "button"), button("Export JSON backup", exportJSON, "button"), button("Import JSON backup", () => $("#backup-file").click(), "button"), button("Offline & portability guide", guide, "button"));
-    if (navigator.storage?.persist) $("#editor-extra").append(button("Protect browser storage", async () => {
-      try {
-        const granted = await navigator.storage.persist();
-        notify(granted ? "Persistent storage granted. Still keep a portable backup." : "Your browser did not grant persistent storage. Export backups regularly.");
-      } catch (error) { report(error); }
-    }, "button"));
     const accent = field("Accent color", "accent", state.settings.accent, "color");
     $("#editor-extra").append(accent.closest(".field"));
+    updateGitHubControls();
   }
   $("#backup-file").addEventListener("change", async (event) => {
     const file = event.target.files[0]; event.target.value = "";
@@ -1636,15 +1772,17 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     $("#editor-error").hidden = true;
     try { await action(data); editor.close(); notify(editorSuccess); }
     catch (error) { showEditorError(error); }
-    finally { controls.forEach((control) => { control.disabled = false; }); }
+    finally { controls.forEach((control) => { control.disabled = false; }); updateGitHubControls(); }
   });
   $("#editor-delete").addEventListener("click", async () => {
     const controls = $$("button", editor); controls.forEach((control) => { control.disabled = true; });
     try { if (await editorDelete() !== false) { editor.close(); notify("Deleted."); } }
     catch (error) { showEditorError(error); }
-    finally { controls.forEach((control) => { control.disabled = false; }); }
+    finally { controls.forEach((control) => { control.disabled = false; }); updateGitHubControls(); }
   });
   $("#close-editor").addEventListener("click", () => editor.close());
+  addEventListener("online", updateGitHubControls);
+  addEventListener("offline", updateGitHubControls);
   $("#cancel-editor").addEventListener("click", () => editor.close());
   $("#save-portable").addEventListener("click", exportPortable);
   $("#more").addEventListener("click", () => { if (state) settings(); });
@@ -1668,6 +1806,18 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   $("#zoom").addEventListener("change", (event) => {
     const zoom = Number(event.target.value); mutate((next) => { next.settings.zoom = zoom; });
   });
+  const boardHeader = $("#board-header");
+  let headerScrollY = scrollY;
+  const revealHeader = () => { boardHeader.classList.remove("shy-hidden"); headerScrollY = Math.max(0, scrollY); };
+  boardHeader.addEventListener("focusin", revealHeader);
+  document.addEventListener("scroll", () => {
+    const y = Math.max(0, scrollY), delta = y - headerScrollY;
+    if (y === 0 || boardHeader.getBoundingClientRect().top > 0 || editor.open || viewer.open || gesture || boardHeader.querySelector(":focus-visible")) {
+      revealHeader(); return;
+    }
+    if (Math.abs(delta) < 8) return;
+    boardHeader.classList.toggle("shy-hidden", delta > 0); headerScrollY = y;
+  }, { passive: true });
   $("#select-all").addEventListener("click", () => { selection = new Set(tabItems().map((item) => item.id)); renderSelection(); });
   $("#select-section").addEventListener("click", () => {
     const selectedSections = activeTab().sections.filter((section) => section.items.some((item) => selection.has(item.id)));
@@ -1685,7 +1835,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       if (event.key === "ArrowRight") { event.preventDefault(); stepViewer(1); }
       return;
     }
-    if (editor.open) return;
+    if (editor.open || deleteWarning.open) return;
     if (event.key === "Escape") {
       if (gesture) endGesture(true);
       else { selection.clear(); renderSelection(); }
