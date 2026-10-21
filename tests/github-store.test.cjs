@@ -137,3 +137,28 @@ test("public reads bypass stale branch caches and pin every original even if the
   assert.equal(remote.files.size, 1);
   assert.ok(remote.calls.filter((call) => call.path.startsWith("/raw/")).every((call) => call.commit === snapshot));
 });
+test("metadata-first reads show all sections without fetching originals and reuse verified cached bytes", async () => {
+  const remote = mockGitHub(), writer = storeFor(remote), data = board();
+  const saved = await writer.write(null, data), reader = storeFor(remote, false);
+  const record = await reader.readCached(undefined, new Map());
+  assert.equal(record.revision, saved.revision); assert.deepEqual(record.board.state, data.state);
+  assert.equal(remote.calls.filter(call => call.path.startsWith("/raw/images/")).length, 0);
+  const asset = record.board.assets[0][1], blob = await reader.readOriginal(asset.remote);
+  assert.deepEqual(Buffer.from(await blob.arrayBuffer()), png);
+  const calls = remote.calls.length;
+  const cached = await reader.readCached(undefined, new Map([["asset", { ...asset, blob }]]));
+  assert.equal(cached.board.assets[0][1].blob, blob);
+  assert.equal(remote.calls.slice(calls).filter(call => call.path.startsWith("/raw/images/")).length, 0);
+  const corrupt = structuredClone(asset.remote); corrupt.sha = "a".repeat(40);
+  await assert.rejects(reader.readOriginal(corrupt), /integrity check/);
+  const other = { ...asset.remote, url: asset.remote.url.replace("/example/", "/someone-else/") };
+  await assert.rejects(reader.readOriginal(other), /Invalid original/);
+});
+test("legacy clients can recover a historical baseline without downloading originals or needing authentication", async () => {
+  const remote = mockGitHub(), writer = storeFor(remote), data = board();
+  const saved = await writer.write(null, data), base = structuredClone(data.state);
+  data.state.settings.layout = "grid"; data.state.revision++;
+  await writer.write(saved.revision, data);
+  assert.deepEqual(await storeFor(remote, false).readState(saved.revision), base);
+  await assert.rejects(storeFor(remote, false).readState("not-a-sha"), /Invalid shared board baseline/);
+});

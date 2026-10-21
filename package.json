@@ -7,7 +7,7 @@
     "build": "node build.cjs",
     "start": "node server.cjs",
     "check": "node --check app.js && node --check board-format.js && node --check github-store.js && node --check sw.js && node --check build.cjs && node --check server.cjs",
-    "test:sync": "node --test tests/github-store.test.cjs",
+    "test:sync": "node --test tests/github-store.test.cjs tests/board-format.test.cjs",
     "test": "playwright test"
   },
   "devDependencies": {

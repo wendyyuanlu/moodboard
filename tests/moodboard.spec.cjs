@@ -8,6 +8,11 @@ async function ready(page) {
   await page.goto("/");
   await expect(page.locator("#save-status")).toHaveText("Saved on this device");
 }
+async function showUploadButtons(page) {
+  await page.locator("#more").click();
+  await page.getByRole("switch", { name: "Show Add image buttons", exact: true }).check();
+  await saveDialog(page);
+}
 async function png(page, width = 120, height = 80, color = "#b6c1a0") {
   const data = await page.evaluate(({ width, height, color }) => {
     const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
@@ -59,7 +64,7 @@ async function snapshot(page) {
     });
     const id = await read("meta", "active"), record = await read("boards", id);
     const assets = [];
-    for (const [key, asset] of record.assets) assets.push([key, { ...asset, bytes: [...new Uint8Array(await asset.blob.arrayBuffer())], blob: null }]);
+    for (const [key, asset] of record.assets) assets.push([key, { ...asset, bytes: asset.blob ? [...new Uint8Array(await asset.blob.arrayBuffer())] : null, blob: null }]);
     db.close(); return { state: record.state, assets };
   });
 }
@@ -71,6 +76,7 @@ async function sharedHarness(browser, fixture) {
   const seed = createGitHubStore({ owner: "example", repo: "moodboard" }, { initialToken: "test-only-token", fetchImpl: remote.fetchImpl });
   await seed.write(null, fixture);
   const initialSaves = remote.history.length;
+  let raceNextSave = false;
   const source = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   const config = { site: "http://127.0.0.1:8085/", owner: "example", repo: "moodboard", branch: "board", collection: "test/shared-board" };
   const html = source.replace(/(<script id="cloud-config" type="application\/json">)[\s\S]*?(<\/script>)/, `$1${JSON.stringify(config)}$2`);
@@ -79,6 +85,13 @@ async function sharedHarness(browser, fixture) {
     await context.route(/^https:\/\/(?:api\.github\.com\/repos\/example\/moodboard|raw\.githubusercontent\.com\/example\/moodboard\/(?:board|[a-f0-9]{40}))(?:\/|$)/, async (route) => {
       const request = route.request(), headers = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-GitHub-Api-Version", "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS" };
       if (request.method() === "OPTIONS") { await route.fulfill({ status: 204, headers }); return; }
+      if (raceNextSave && request.method() === "PATCH") {
+        raceNextSave = false;
+        const latest = remote.packageAt(), item = latest.board.state.tabs[0].sections[0].items[0];
+        latest.board.state.revision++;
+        latest.board.state.tabs[0].sections[0].items.push({ ...item, id: "race-item", title: "racing-import.png" });
+        await seed.write(latest.revision, latest.board);
+      }
       const response = await remote.fetchImpl(request.url(), { method: request.method(), headers: { Authorization: request.headers().authorization }, body: request.postData() });
       await route.fulfill({ status: response.status, headers: { ...headers, "Content-Type": response.headers.get("Content-Type") || "application/octet-stream" }, body: Buffer.from(await response.arrayBuffer()) });
     });
@@ -89,10 +102,11 @@ async function sharedHarness(browser, fixture) {
     await connect(context);
     const page = await context.newPage(); await page.goto("http://127.0.0.1:8085/");
     await expect(page.locator("#save-status")).toHaveText("Saved to GitHub");
+    await expect.poll(async () => (await snapshot(page)).assets.every(([, asset]) => asset.bytes !== null)).toBe(true);
     if (authenticated) await authenticateShared(page);
     return { page, context };
   }
-  return { open, connect, corruptOriginal: () => { const path = [...remote.files.keys()].find((path) => path.startsWith("images/")); remote.blobs.set(remote.files.get(path), Buffer.from("not the original")); },
+  return { open, connect, raceNextSave: () => { raceNextSave = true; }, corruptOriginal: () => { const path = [...remote.files.keys()].find((path) => path.startsWith("images/")); remote.blobs.set(remote.files.get(path), Buffer.from("not the original")); },
     get writes() { return remote.history.slice(initialSaves).map((head) => remote.packageAt(head)); },
     get record() { return remote.packageAt(); }, close: () => Promise.all(contexts.map((context) => context.close())) };
 }
@@ -413,6 +427,7 @@ test("bulk copy/move, keyboard copy, image editing and edit-off protection", asy
     await upload(page, ["edge-a.png", "edge-b.png", "edge-c.png"], await png(page, 120, 160));
     await expect(page.locator(".image-card")).toHaveCount(3);
     await page.locator('button[data-layout=grid]').click();
+    await expect(page.locator('button[data-layout=grid]')).toHaveAttribute("aria-pressed", "true");
     const first = await page.locator(".image-card").first().boundingBox();
     await page.mouse.move(2, first.y + 5); await page.mouse.down();
     await page.mouse.move(first.x + first.width / 2, first.y + first.height / 2, { steps: 8 }); await page.mouse.up();
@@ -428,7 +443,7 @@ test("bulk copy/move, keyboard copy, image editing and edit-off protection", asy
     await expect(page.locator(".image-card").nth(1).locator(".select-image")).toBeChecked();
   });
 test("section upload follows its checkbox and uses the same 20px header icon", async ({ page }) => {
-  await ready(page); await newSection(page, "Upload target");
+  await ready(page); await showUploadButtons(page); await newSection(page, "Upload target");
   const section = page.locator(".section").last();
   expect(await section.locator(".section-actions").evaluate(node => [...node.children].map(child => child.className))).toEqual(["section-selection", "icon-button section-upload", "icon-button"]);
   const uploadIcon = section.locator(".section-upload svg");
@@ -1039,7 +1054,7 @@ test("crops persist through copies, backups and offline HTML; invalid crop impor
 });
 
 test("hidden intro keeps uploads available and pencil edit toggle shares the layout row", async ({ page }) => {
-  await ready(page);
+  await ready(page); await showUploadButtons(page);
   await expect(page.locator("section.intro")).toBeHidden();
   await expect(page.locator("#edit-toggle svg")).toHaveCount(1);
   await expect(page.locator("#edit-toggle")).toHaveText("");
@@ -1091,7 +1106,7 @@ test("tabs edit on double-click, F2, or touch hold without the board-heading blo
 });
 
 test("20px layout icons and square horizontally flipped edit control, with paste toolbar hidden", async ({ page }) => {
-    await ready(page);
+    await ready(page); await showUploadButtons(page);
     await expect(page.locator("#paste-toolbar")).toBeHidden();
     await expect(page.locator(".zoom-label")).toHaveText("");
     for (const name of ["Masonry", "Grid", "List"]) {
@@ -1168,7 +1183,7 @@ test("compact Caption actions stay together and 30px commands overlay originals 
   await page.locator("#more").click();
   await expect(page.getByRole("heading", { name: "Caption", exact: true })).toBeVisible();
   await expect(page.locator("#editor-fields > .dialog-footer")).toHaveCount(1);
-  expect(await page.locator(".dialog-footer").evaluate(footer => footer.previousElementSibling.querySelector("input").name)).toBe("showUrls");
+  expect(await page.locator(".dialog-footer").evaluate(footer => footer.previousElementSibling.querySelector("input").name)).toBe("showAddImages");
   for (const toggle of await page.locator(".caption-toggle").all()) {
     const label = await toggle.locator("span").boundingBox(), input = await toggle.locator("input").boundingBox();
     expect(input.width).toBe(28); expect(input.height).toBe(16);
@@ -1239,7 +1254,7 @@ test("photo details follow the compact field order and the 20px site shortcut fo
 });
 
 test("header controls are compact and Manage precedes captions without the removed menu actions", async ({ page }) => {
-  await ready(page);
+  await ready(page); await showUploadButtons(page);
   await expect(page.locator(".app-header .brand, .app-header .tagline")).toHaveCount(0);
   expect(await page.locator(".header-start > button").evaluateAll(buttons => buttons.map(button => button.id))).toEqual(["more", "add-images"]);
   for (const width of [320, 390, 768, 1440]) {
@@ -1656,7 +1671,7 @@ test("offline GitHub outbox survives reload, reconnects, and portable copies sta
   } finally { await shared.close(); }
 });
 
-test("simultaneous public edits report conflicts without overwriting, and merging preserves both versions", async ({ page, browser }) => {
+test("simultaneous independent public additions merge without duplicating originals or placements", async ({ page, browser }) => {
   const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
   try {
     const a = await shared.open({ authenticated: true }), b = await shared.open({ authenticated: true });
@@ -1665,18 +1680,14 @@ test("simultaneous public edits report conflicts without overwriting, and mergin
     await paste(a.page, ["online-A.png"], fixture.bytes); await expect(a.page.locator(".image-card")).toHaveCount(2);
     await expect(a.page.locator("#save-status")).toHaveText("Saved to GitHub");
     await b.context.setOffline(false);
-    await expect(b.page.locator("#save-status")).toHaveText("Save conflict · kept on device");
-    expect(shared.record.board.state.tabs.flatMap((tab) => tab.sections.flatMap((section) => section.items.map((item) => item.title)))).toEqual(["shared-original.png", "online-A.png"]);
-    expect(await titles(b.page)).toEqual(["shared-original.png", "offline-B.png"]);
-    await b.page.locator("#more").click();
-    await expect(b.page.locator("#manage-conflict")).toHaveText("A newer shared version conflicts with this device. Export a backup, then choose how to resolve it.");
-    await expect(b.page.locator("#manage-conflict")).toBeVisible();
-    await expect(b.page.locator(".settings-manage > :nth-child(2)")).toHaveAttribute("id", "manage-conflict");
-    await b.page.getByRole("button", { name: "Merge local with Github version", exact: true }).click();
-    await expect(b.page.locator("#editor")).not.toBeVisible();
     await expect(b.page.locator("#save-status")).toHaveText("Saved to GitHub");
+    expect(await titles(b.page)).toEqual(["shared-original.png", "online-A.png", "offline-B.png"]);
+    await b.page.locator("#more").click();
+    await expect(b.page.locator("#manage-conflict")).toBeHidden();
+    await expect(b.page.locator(".settings-manage > :nth-child(2)")).toHaveAttribute("id", "manage-conflict");
     const names = shared.record.board.state.tabs.flatMap((tab) => tab.sections.flatMap((section) => section.items.map((item) => item.title)));
-    expect(names).toContain("online-A.png"); expect(names).toContain("offline-B.png");
+    expect(names).toEqual(["shared-original.png", "online-A.png", "offline-B.png"]);
+    expect(shared.record.board.state.tabs).toHaveLength(1);
   } finally { await shared.close(); }
 });
 
@@ -1752,16 +1763,20 @@ test("USB portable copy embeds every original across tabs and collapsed sections
   }
 });
 
-test("an incomplete first shared load cannot download a misleading partial portable copy", async ({ page, browser }) => {
+test("failed original caching is explicit and cannot download a misleading partial portable copy", async ({ page, browser }) => {
   const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
   const context = await browser.newContext({ serviceWorkers: "block" });
   try {
     shared.corruptOriginal(); await shared.connect(context);
     const reader = await context.newPage(); await reader.goto("http://127.0.0.1:8085/");
-    await expect(reader.locator("#save-status")).toHaveText("Could not load GitHub board");
+    await expect(reader.locator("#save-status")).toHaveText("Saved to GitHub");
     await expect(reader.locator("#notice")).toContainText("integrity check");
-    await expect(reader.locator("#save-portable")).toBeDisabled();
-    await expect(reader.locator(".image-card")).toHaveCount(0);
+    await expect(reader.locator(".image-card")).toHaveCount(1);
+    let downloads = 0; reader.on("download", () => downloads++);
+    await reader.locator("#save-portable").click();
+    await expect(reader.locator("#notice")).toContainText("integrity check");
+    expect(downloads).toBe(0);
+    expect((await snapshot(reader)).assets[0][1].bytes).toBeNull();
   } finally { await context.close(); await shared.close(); }
 });
 
@@ -1782,6 +1797,169 @@ test("original ingestion and shared caching do not wait for paint-time image dec
     await expect(reader.locator("#save-status")).toHaveText("Saved to GitHub");
     await expect(reader.locator(".image-card")).toHaveCount(1);
     expect(await reader.evaluate(() => window.paintDecoderCalls)).toBe(0);
+    await expect.poll(async () => (await snapshot(reader)).assets[0][1].bytes !== null).toBe(true);
     expect(Buffer.from((await snapshot(reader)).assets[0][1].bytes).equals(fixture.bytes)).toBe(true);
   } finally { await context.close(); await shared.close(); }
+});
+
+test("long section titles truncate and all upload buttons default hidden with a persistent settings toggle", async ({ page }) => {
+  await ready(page);
+  const name = "A very long section title ".repeat(5);
+  await newSection(page, name);
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    const title = page.locator(".section-toggle strong").last();
+    await expect(title).toHaveText(name.trim()); await expect(title).toHaveAttribute("title", name.trim());
+    const metrics = await title.evaluate(node => ({ client: node.clientWidth, scroll: node.scrollWidth, overflow: getComputedStyle(node).textOverflow, whiteSpace: getComputedStyle(node).whiteSpace }));
+    if (width < 600) expect(metrics.scroll).toBeGreaterThan(metrics.client);
+    expect(metrics.overflow).toBe("ellipsis"); expect(metrics.whiteSpace).toBe("nowrap");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+  await expect(page.locator("#add-images")).toBeHidden();
+  for (const control of await page.locator(".section-upload").all()) await expect(control).toBeHidden();
+  await paste(page, ["paste-without-buttons.png"], await png(page)); await expect(page.locator(".image-card")).toHaveCount(1);
+  await showUploadButtons(page);
+  await expect(page.locator("#add-images")).toBeVisible();
+  await expect(page.locator(".section-upload").last()).toBeVisible();
+  await page.reload(); await expect(page.locator("#add-images")).toBeVisible();
+  expect((await snapshot(page)).state.settings.showAddImages).toBe(true);
+  await page.locator("#more").click(); await page.getByRole("switch", { name: "Show Add image buttons", exact: true }).uncheck();
+  await page.locator("#cancel-editor").click(); await expect(page.locator("#add-images")).toBeVisible();
+  await page.locator("#more").click(); await page.getByRole("switch", { name: "Show Add image buttons", exact: true }).uncheck(); await saveDialog(page);
+  await expect(page.locator("#add-images")).toBeHidden();
+});
+
+test("tab order dialog supports mouse, keyboard, cancellation and saved order without changing active tab", async ({ page }) => {
+  await ready(page); await upload(page, ["retained.png"], await png(page));
+  await newTab(page, "Second"); await newTab(page, "Third");
+  const before = await snapshot(page);
+  expect(await page.locator("#reorder-tabs").evaluate(node => node.previousElementSibling.id)).toBe("new-tab");
+  await page.locator("#reorder-tabs").click();
+  const handles = page.locator(".tab-order-handle"), rows = page.locator(".tab-order-row");
+  const from = await handles.last().boundingBox(), to = await rows.first().boundingBox();
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2); await page.mouse.down();
+  await page.mouse.move(to.x + 20, to.y + 3, { steps: 12 });
+  await expect(page.locator(".tab-order-name").first()).toHaveText("Third");
+  await page.mouse.up(); await page.locator("#cancel-editor").click();
+  expect((await snapshot(page)).state.tabs.map(tab => tab.name)).toEqual(before.state.tabs.map(tab => tab.name));
+  await page.locator("#reorder-tabs").click();
+  await handles.last().focus(); await page.keyboard.press("Home"); await saveDialog(page);
+  expect((await snapshot(page)).state.tabs.map(tab => tab.name)).toEqual(["Third", "My inspiration", "Second"]);
+  expect((await snapshot(page)).state.activeTab).toBe(before.state.activeTab);
+  expect((await snapshot(page)).assets).toEqual(before.assets);
+  await page.reload(); await expect(page.locator(".tab-name").first()).toHaveText("Third");
+  await page.locator("#edit-toggle").click(); await expect(page.locator("#reorder-tabs")).toBeHidden();
+});
+
+test("pending layout and empty-tab deletion rebase legacy metadata and keep receiving shared imports", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page);
+  fixture.board.state.tabs.push({ id: "empty-tab", name: "Empty", sections: [] });
+  const shared = await sharedHarness(browser, fixture.board);
+  try {
+    const author = await shared.open({ authenticated: true }), reader = await shared.open();
+    await reader.context.setOffline(true);
+    await reader.page.getByRole("button", { name: "Grid", exact: true }).click();
+    await reader.page.locator('.tab[data-tab-id="empty-tab"]').dblclick();
+    reader.page.once("dialog", dialog => dialog.accept()); await reader.page.locator("#editor-delete").click();
+    await expect(reader.page.locator("#editor")).not.toBeVisible();
+    await reader.page.evaluate(async () => {
+      const db = await new Promise(resolve => { const request = indexedDB.open("moodboard-portable", 1); request.onsuccess = () => resolve(request.result); });
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction("meta", "readwrite"), store = tx.objectStore("meta"), active = store.get("active");
+        active.onsuccess = () => {
+          const key = `cloud:${active.result}`, info = store.get(key);
+          info.onsuccess = () => { const value = info.result; delete value.baseState; store.put(value, key); };
+        }; tx.oncomplete = resolve; tx.onabort = () => reject(tx.error);
+      }); db.close();
+    });
+    await reader.page.reload();
+    await paste(author.page, ["import-one.png"], fixture.bytes); await expect(author.page.locator("#save-status")).toHaveText("Saved to GitHub");
+    await reader.context.setOffline(false);
+    await expect(reader.page.locator(".image-card")).toHaveCount(2);
+    await expect(reader.page.locator("#save-status")).toContainText("Enable auto-sync");
+    expect((await snapshot(reader.page)).state.settings.layout).toBe("grid");
+    expect((await snapshot(reader.page)).state.tabs.map(tab => tab.name)).toEqual(["My inspiration"]);
+    await paste(author.page, ["import-two.png"], fixture.bytes); await expect(author.page.locator("#save-status")).toHaveText("Saved to GitHub");
+    await reader.page.locator("#more").click(); await reader.page.getByRole("button", { name: "Force re-sync", exact: true }).click();
+    await expect(reader.page.locator(".image-card")).toHaveCount(3);
+    expect((await snapshot(reader.page)).state.settings.layout).toBe("grid");
+    await authenticateShared(reader.page);
+    expect(shared.record.board.state.settings.layout).toBe("grid");
+    expect(shared.record.board.state.tabs.map(tab => tab.name)).toEqual(["My inspiration"]);
+    expect(shared.record.board.assets).toHaveLength(3);
+  } finally { await shared.close(); }
+});
+
+test("fresh mobile readers browse originals and tabs before a slow background original finishes", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page), delayed = { ...fixture.board.assets[0][1], name: "delayed.png" };
+  fixture.board.assets.push(["delayed", delayed]);
+  fixture.board.state.tabs.push({ id: "outfits", name: "Outfits", sections: [{ id: "outfit-section", name: "Slow original", collapsed: false,
+    items: [{ id: "outfit-item", assetId: "delayed", title: "delayed.png", notes: "" }] }] });
+  const shared = await sharedHarness(browser, fixture.board), context = await browser.newContext({ serviceWorkers: "block", viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  try {
+    await shared.connect(context);
+    await context.route(/\/images\/[^/]+-delayed\.png$/, async route => { await gate; await route.fallback(); });
+    const reader = await context.newPage(); await reader.goto("http://127.0.0.1:8085/");
+    await expect(reader.locator("#save-status")).toHaveText("Saved to GitHub");
+    await expect(reader.locator(".tab")).toHaveCount(2);
+    await expect(reader.locator(".image-hit img")).toHaveJSProperty("naturalWidth", 120);
+    expect((await snapshot(reader)).assets.find(([id]) => id === "delayed")[1].bytes).toBeNull();
+    await reader.locator('.tab[data-tab-id="outfits"]').click(); await expect(reader.locator(".image-card")).toHaveCount(1);
+    release();
+    await expect(reader.locator(".image-hit img")).toHaveJSProperty("naturalWidth", 120);
+    await expect.poll(async () => (await snapshot(reader)).assets.every(([, asset]) => asset.bytes !== null)).toBe(true);
+  } finally { release(); await context.close(); await shared.close(); }
+});
+
+test("touch tab dragging supports cancellation and persistence", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  try {
+    const page = await context.newPage(); await ready(page); await newTab(page, "Second"); await newTab(page, "Third");
+    await page.locator("#reorder-tabs").click();
+    const client = await context.newCDPSession(page);
+    const drag = async cancel => {
+      const from = await page.locator(".tab-order-handle").last().boundingBox(), to = await page.locator(".tab-order-row").first().boundingBox();
+      const x = from.x + from.width / 2;
+      await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: from.y + from.height / 2 }] });
+      await client.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: to.y + 2 }] });
+      await expect(page.locator(".tab-order-name").first()).toHaveText("Third");
+      await client.send("Input.dispatchTouchEvent", { type: cancel ? "touchCancel" : "touchEnd", touchPoints: [] });
+    };
+    await drag(true); await expect(page.locator(".tab-order-name").first()).toHaveText("My inspiration");
+    await drag(false); await saveDialog(page);
+    await page.reload(); await expect(page.locator(".tab-name").first()).toHaveText("Third");
+  } finally { await context.close(); }
+});
+
+test("competing edits to the same notes still protect both versions with a real conflict", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
+  try {
+    const author = await shared.open({ authenticated: true }), reader = await shared.open({ authenticated: true });
+    await reader.context.setOffline(true);
+    for (const [device, value] of [[reader.page, "Local notes"], [author.page, "Shared notes"]]) {
+      await device.getByRole("button", { name: "Edit image shared-original.png", exact: true }).click();
+      await device.locator("#editor [name=notes]").fill(value); await saveDialog(device);
+    }
+    await expect(author.page.locator("#save-status")).toHaveText("Saved to GitHub");
+    await reader.context.setOffline(false);
+    await expect(reader.page.locator("#save-status")).toHaveText("Save conflict · kept on device");
+    expect((await snapshot(reader.page)).state.tabs[0].sections[0].items[0].notes).toBe("Local notes");
+    expect(shared.record.board.state.tabs[0].sections[0].items[0].notes).toBe("Shared notes");
+    await reader.page.locator("#more").click(); await expect(reader.page.locator("#manage-conflict")).toBeVisible();
+  } finally { await shared.close(); }
+});
+
+test("a GitHub branch race retries and rebases rather than leaving a permanent save conflict", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
+  try {
+    const author = await shared.open({ authenticated: true });
+    shared.raceNextSave();
+    await paste(author.page, ["local-after-race.png"], fixture.bytes);
+    await expect(author.page.locator(".image-card")).toHaveCount(3);
+    await expect(author.page.locator("#save-status")).toHaveText("Saved to GitHub");
+    expect(new Set(await titles(author.page))).toEqual(new Set(["shared-original.png", "racing-import.png", "local-after-race.png"]));
+    expect(shared.record.board.state.tabs).toHaveLength(1);
+  } finally { await shared.close(); }
 });

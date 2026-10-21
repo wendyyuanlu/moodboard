@@ -84,6 +84,9 @@ const MoodboardGitHub = (() => {
         const asset = Array.isArray(entry) && entry[1];
         if (!asset || !/^images\/[a-f0-9]{64}-[a-zA-Z0-9._-]+$/.test(asset.path) || !/^[a-f0-9]{40}$/.test(asset.sha) || !format.supportedImage.test(asset.mime)) throw new SaveError(502, "The shared board contains an invalid image record.");
       }
+      const ids = new Set(manifest.assets.map(([id]) => id));
+      if (ids.size !== manifest.assets.length) throw new SaveError(502, "The shared board contains duplicate original records.");
+      format.validateState(manifest.state, ids);
     }
     async function loadMeta() {
       const ref = await api(`/git/ref/heads/${branch}`);
@@ -97,7 +100,7 @@ const MoodboardGitHub = (() => {
       checkManifest(manifest);
       return { revision: entry.sha, manifest, head: ref.object.sha, tree: commit.tree.sha, paths: new Map(manifest.assets.map(([, asset]) => [asset.path, asset.sha])) };
     }
-    async function read(knownRevision) {
+    async function read(knownRevision, cachedAssets) {
       let record;
       if (token) record = await loadMeta();
       else {
@@ -111,6 +114,17 @@ const MoodboardGitHub = (() => {
       }
       if (!record.manifest) return { revision: null, board: null };
       if (record.revision === knownRevision) return null;
+      if (cachedAssets) {
+        const entries = [];
+        for (const [id, asset] of record.manifest.assets) {
+          const cached = cachedAssets.get(id);
+          const reusable = cached?.blob instanceof Blob && (cached.remote?.sha === asset.sha || await gitHash(new Uint8Array(await cached.blob.arrayBuffer())) === asset.sha);
+          entries.push([id, { name: asset.name, width: asset.width, height: asset.height,
+            ...(reusable ? { blob: cached.blob } : {}), remote: { url: `${raw(record.head)}/${asset.path}`, sha: asset.sha, mime: asset.mime } }]);
+        }
+        format.validate(record.manifest.state, new Map(entries));
+        return { revision: record.revision, board: { format: "moodboard", version: 1, state: record.manifest.state, assets: entries } };
+      }
       const assets = [];
       for (const [id, asset] of record.manifest.assets) {
         let bytes;
@@ -154,6 +168,23 @@ const MoodboardGitHub = (() => {
       else await api("/git/refs", "POST", { ref: `refs/heads/${branch}`, sha: commit.sha });
       return { revision: manifest.sha };
     }
+    async function readState(revision) {
+      if (!/^[a-f0-9]{40}$/.test(revision)) throw new SaveError(400, "Invalid shared board baseline revision.");
+      const blob = await api(`/git/blobs/${revision}`);
+      if (!blob) throw new SaveError(502, "The original shared revision is unavailable. Export a backup before resolving this conflict.");
+      const manifest = JSON.parse(new TextDecoder().decode(bytesFromBase64(blob.content.replace(/\s/g, ""))));
+      checkManifest(manifest);
+      format.validateState(manifest.state, new Set(manifest.assets.map(([id]) => id)));
+      return manifest.state;
+    }
+    async function readOriginal(remote) {
+      if (!format.validRemote(remote) || !remote.url.startsWith(raw(""))) throw new SaveError(400, "Invalid original image location.");
+      const response = await fetchImpl(remote.url, { cache: "force-cache", credentials: "omit", signal: AbortSignal.timeout(120000) });
+      if (!response.ok) throw new SaveError(response.status, `Could not cache a full original (${response.status}). Stay online and retry before your flight.`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (await gitHash(bytes) !== remote.sha || !imageSignature(bytes, remote.mime)) throw new SaveError(502, "A shared original failed its integrity check.");
+      return new Blob([bytes], { type: remote.mime });
+    }
     const serialize = (action) => {
       const result = operations.then(action); operations = result.catch(() => {}); return result;
     };
@@ -169,6 +200,9 @@ const MoodboardGitHub = (() => {
       },
       disconnect: () => { token = ""; },
       read: (knownRevision) => serialize(() => read(knownRevision)),
+      readCached: (knownRevision, cachedAssets) => serialize(() => read(knownRevision, cachedAssets)),
+      readOriginal,
+      readState: (revision) => serialize(() => readState(revision)),
       write: (expectedRevision, board) => serialize(() => write(expectedRevision, board))
     };
   }

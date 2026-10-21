@@ -23,7 +23,7 @@ function mockGitHub() {
     }
     const path = parsed.pathname.replace("/repos/example/moodboard", "");
     const auth = options.headers?.Authorization;
-    if (auth ? auth !== "Bearer test-only-token" : options.method !== "GET" || path !== "/git/ref/heads/board") return reply({}, 401);
+    if (auth ? auth !== "Bearer test-only-token" : options.method !== "GET" || !(path === "/git/ref/heads/board" || /^\/git\/blobs\/[a-f0-9]{40}$/.test(path))) return reply({}, 401);
     const data = options.body ? JSON.parse(options.body) : null;
     calls.push({ path, method: options.method, data });
     if (options.method === "GET") {

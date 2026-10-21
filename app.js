@@ -24,6 +24,8 @@
   let showManageHelp = false;
   let cloudInfo = { collection: cloudConfig?.collection, revision: null, dirty: false, lastSyncedAt: null };
   let cloudReady = false, cloudSaving = false, cloudConflict = false, cloudError = "", cloudTimer, lastCloudRead = 0;
+  let shellReady = false, cachingOriginals = false, originalCacheError = "";
+  const originalDownloads = new Map();
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -60,7 +62,9 @@
   function findSection(sectionId, data = state) { return sections(data).find((section) => section.id === sectionId); }
   function tabItems() { return activeTab().sections.flatMap((section) => section.items); }
   function imageURL(assetId) {
-    if (!urls.has(assetId)) urls.set(assetId, URL.createObjectURL(assets.get(assetId).blob));
+    const asset = assets.get(assetId);
+    if (!(asset.blob instanceof Blob)) return asset.remote.url;
+    if (!urls.has(assetId)) urls.set(assetId, URL.createObjectURL(asset.blob));
     return urls.get(assetId);
   }
   function sizeText(size) {
@@ -145,7 +149,7 @@
   function setSaveStatus() {
     let status = memoryOnly ? "Export to keep changes" : "Saved on this device";
     if (cloudEnabled) {
-      status = cloudConflict ? "Save conflict · kept on device" : cloudSaving ? "Saving to GitHub…"
+      status = cloudConflict ? "Save conflict · kept on device" : cloudSaving ? "Syncing with GitHub…"
         : cloudError ? cloudInfo.revision || allItems().length ? "Saved here · GitHub unavailable" : "Could not load GitHub board" : !cloudReady ? "Connecting to shared board…"
         : cloudInfo.dirty ? github.connected ? "Saved here · waiting for GitHub" : "Saved here · Enable auto-sync" : "Saved to GitHub";
       if (memoryOnly && cloudInfo.dirty) status = "In memory · export a backup";
@@ -315,6 +319,7 @@
     const current = activeTab();
     document.body.dataset.theme = state.settings.theme;
     document.body.classList.toggle("edit-off", !editable);
+    document.body.classList.toggle("hide-add-images", !(state.settings.showAddImages ?? false));
     document.documentElement.style.setProperty("--accent", state.settings.accent);
     document.documentElement.style.setProperty("--tile-size", `${state.settings.zoom}px`);
     $("#zoom").value = state.settings.zoom;
@@ -380,7 +385,8 @@
     const toggle = button("", () => mutate((next) => { findSection(section.id, next).collapsed = !findSection(section.id, next).collapsed; }), "section-toggle");
     toggle.setAttribute("aria-expanded", String(!section.collapsed));
     const chevron = el("span", "chevron"); setIcon(chevron, '<path d="m6 9 6 6 6-6"/>');
-    toggle.append(chevron, el("strong", "", section.name));
+    const title = el("strong", "", section.name); title.title = section.name;
+    toggle.append(chevron, title);
     const actions = el("div", "section-actions edit-control");
     const add = button("", () => { setCursor(section.id); $("#image-files").click(); }, "icon-button section-upload");
     add.setAttribute("aria-label", `Add images to ${section.name}`); add.title = `Add images to ${section.name}`;
@@ -451,11 +457,13 @@
       img = el("img"); img.src = imageURL(item.assetId); img.alt = item.title; img.loading = "lazy"; img.decoding = "async"; img.draggable = false;
       img.width = asset.width; img.height = asset.height;
     }
-    img.addEventListener("error", () => notify(`Could not display “${item.title}”. The original is still available in your backup.`), { once: true });
+    img.addEventListener("error", () => notify(`Could not display “${item.title}”. ${assets.get(item.assetId)?.blob
+      ? "The saved original is still available for export."
+      : originalCacheError || "This original is not cached yet. Stay online and use Force re-sync to retry."}`), { once: true });
     const caption = el("div", "card-caption"), filename = el("h3", "", item.title);
     filename.hidden = !(state.settings.showFilenames ?? false); caption.append(filename);
     if (item.notes) caption.append(el("p", "", item.notes));
-    caption.append(el("small", "card-meta", `${asset.width} × ${asset.height} · ${sizeText(asset.blob.size)}`));
+    caption.append(el("small", "card-meta", `${asset.width} × ${asset.height} · ${asset.blob ? sizeText(asset.blob.size) : "original not cached yet"}`));
     const sourceUrl = sourcePageURL(item.sourceUrl);
     if (sourceUrl) {
       const link = el("a", "source-link", sourceUrl);
@@ -542,6 +550,76 @@
   }
   function duplicateSection(section) {
     return { ...clone(section), id: uid(), items: section.items.map((item) => ({ ...clone(item), id: uid() })) };
+  }
+  function openTabOrder() {
+    const list = el("div", "tab-order-list");
+    list.setAttribute("role", "list"); list.setAttribute("aria-label", "Tab order");
+    openEditor("Reorder tabs", async () => {
+      const ids = [...list.children].map(row => row.dataset.tabId);
+      await enqueue(() => commit(next => {
+        if (next.tabs.length !== ids.length || next.tabs.some(tab => !ids.includes(tab.id))) throw new Error("The tabs changed while this dialog was open. Cancel and reopen it before saving.");
+        const tabs = new Map(next.tabs.map(tab => [tab.id, tab]));
+        next.tabs = ids.map(id => tabs.get(id));
+      }));
+    });
+    hint("Drag a handle to rearrange tabs. On a keyboard, focus a handle and use Up/Down or Home/End. Save applies the order; Cancel keeps the original order.");
+    const status = el("p", "hint"); status.setAttribute("role", "status");
+    let drag = null, frame = 0;
+    const update = () => {
+      [...list.children].forEach((row, index) => {
+        row.setAttribute("aria-posinset", String(index + 1)); row.setAttribute("aria-setsize", String(list.children.length));
+        $(".tab-order-handle", row).setAttribute("aria-label", `Move ${$(".tab-order-name", row).textContent}, position ${index + 1} of ${list.children.length}`);
+      });
+    };
+    const finish = cancel => {
+      if (!drag) return;
+      const current = drag; drag = null; cancelAnimationFrame(frame);
+      if (cancel) for (const row of current.order) list.append(row);
+      current.row.classList.remove("reordering");
+      if (list.hasPointerCapture(current.pointerId)) list.releasePointerCapture(current.pointerId);
+      update(); status.textContent = cancel ? "Drag cancelled." : "Tab moved. Save to apply.";
+    };
+    for (const tab of state.tabs) {
+      const row = el("div", "tab-order-row"), handle = button("", () => {}, "icon-button tab-order-handle");
+      row.dataset.tabId = tab.id; row.setAttribute("role", "listitem");
+      setIcon(handle, '<path d="M8 5h.01M16 5h.01M8 12h.01M16 12h.01M8 19h.01M16 19h.01"/>');
+      const name = el("span", "tab-order-name", tab.name); name.title = tab.name;
+      row.append(handle, name); list.append(row);
+      handle.addEventListener("keydown", event => {
+        if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const rows = [...list.children], index = rows.indexOf(row);
+        const destination = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1
+          : Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)));
+        rows.splice(index, 1); rows.splice(destination, 0, row);
+        for (const entry of rows) list.append(entry);
+        update(); handle.focus(); status.textContent = `Moved ${tab.name} to position ${destination + 1}. Save to apply.`;
+      });
+      handle.addEventListener("pointerdown", event => {
+        if (event.button !== 0 || drag) return;
+        event.preventDefault(); handle.focus();
+        drag = { row, pointerId: event.pointerId, y: event.clientY, order: [...list.children] };
+        row.classList.add("reordering"); list.setPointerCapture(event.pointerId);
+        const scroll = () => {
+          if (!drag) return;
+          const bounds = list.getBoundingClientRect();
+          if (drag.y < bounds.top + 36) list.scrollTop -= 8;
+          else if (drag.y > bounds.bottom - 36) list.scrollTop += 8;
+          const target = [...list.children].find(entry => entry !== row && drag.y < entry.getBoundingClientRect().top + entry.getBoundingClientRect().height / 2);
+          list.insertBefore(row, target || null);
+          frame = requestAnimationFrame(scroll);
+        };
+        frame = requestAnimationFrame(scroll);
+      });
+    }
+    list.addEventListener("pointermove", event => { if (drag?.pointerId === event.pointerId) { event.preventDefault(); drag.y = event.clientY; } });
+    list.addEventListener("pointerup", event => { if (drag?.pointerId === event.pointerId) finish(false); });
+    list.addEventListener("pointercancel", () => finish(true));
+    list.addEventListener("lostpointercapture", () => finish(true));
+    const cancelDrag = event => { if (drag && event.key === "Escape") { event.preventDefault(); finish(true); } };
+    editor.addEventListener("keydown", cancelDrag);
+    editor.addEventListener("close", () => { finish(true); editor.removeEventListener("keydown", cancelDrag); }, { once: true });
+    update(); $("#editor-fields").append(list, status);
   }
   function openTab(tab) {
     openEditor(tab ? "Your tab, your way" : "A new space for inspiration", async (form) => {
@@ -725,7 +803,7 @@
     const notes = field("Notes", "notes", item.notes, "textarea"); notes.maxLength = 10000;
     const title = field("Filename", "title", item.title); title.required = true; title.maxLength = 300;
     const asset = assets.get(item.assetId);
-    hint(`Original: ${asset.width} × ${asset.height} pixels · ${sizeText(asset.blob.size)} · ${asset.blob.type}.`);
+    hint(`Original: ${asset.width} × ${asset.height} pixels · ${asset.blob ? sizeText(asset.blob.size) : "not cached yet"} · ${asset.blob?.type || asset.remote.mime}.`);
   }
   function transfer(data, ids, target, copy, replacements) {
     const wanted = new Set(ids);
@@ -944,7 +1022,7 @@
     if (!item) return;
     const asset = assets.get(item.assetId), url = imageURL(item.assetId);
     $("#viewer-title").textContent = item.title;
-    $("#viewer-details").textContent = `${asset.width} × ${asset.height} · ${sizeText(asset.blob.size)} · original`;
+    $("#viewer-details").textContent = `${asset.width} × ${asset.height} · ${asset.blob ? sizeText(asset.blob.size) : "not cached yet"} · original`;
     const image = $("#viewer-image"); image.src = url; image.alt = item.title;
     image.width = asset.width; image.height = asset.height;
     const sourceImageUrl = sourcePageURL(item.sourceImageUrl);
@@ -977,6 +1055,14 @@
   $("#viewer-prev").addEventListener("click", () => stepViewer(-1));
   $("#viewer-next").addEventListener("click", () => stepViewer(1));
   $("#viewer-close").addEventListener("click", () => viewer.close());
+  $("#viewer-download").addEventListener("click", async event => {
+    event.preventDefault();
+    const item = allItems().find(item => item.id === viewItems[viewIndex]);
+    if (!item) { report(new Error("This image is no longer in the board.")); return; }
+    const asset = assets.get(item.assetId);
+    try { download((await ensureOriginal(item.assetId, asset)).blob, asset.name); }
+    catch (error) { report(error); }
+  });
   $("#viewer-zoom").addEventListener("click", () => {
     const actual = $("#viewer-stage").classList.toggle("actual");
     $("#viewer-zoom").setAttribute("aria-pressed", String(actual));
@@ -1157,21 +1243,81 @@
       reader.readAsDataURL(blob);
     });
   }
+  function updateOfflineStatus() {
+    if (!shellReady) return;
+    const cached = [...assets.values()].filter(asset => asset.blob instanceof Blob).length;
+    $("#connection-status").textContent = originalCacheError ? "Originals not fully cached · reconnect and Force re-sync"
+      : cached < assets.size ? `Caching originals ${cached}/${assets.size} · stay online`
+        : memoryOnly ? "Offline shell only · export to keep originals" : "Offline ready";
+  }
+  async function ensureOriginal(id, asset) {
+    if (asset.blob instanceof Blob) return asset;
+    const key = `${id}:${asset.remote.sha}`;
+    if (!originalDownloads.has(key)) {
+      originalDownloads.set(key, (async () => {
+        const blob = await github.readOriginal(asset.remote), decoded = await readImage(blob);
+        if (decoded.width !== asset.width || decoded.height !== asset.height) throw new Error(`The dimensions of “${asset.name}” do not match its shared original.`);
+        return { ...asset, blob };
+      })().finally(() => originalDownloads.delete(key)));
+    }
+    return originalDownloads.get(key);
+  }
+  async function cacheOriginals() {
+    if (cachingOriginals || !navigator.onLine) { updateOfflineStatus(); return; }
+    const originals = [...assets].filter(([, asset]) => !(asset.blob instanceof Blob));
+    if (!originals.length) { updateOfflineStatus(); return; }
+    cachingOriginals = true; originalCacheError = ""; updateOfflineStatus();
+    let index = 0, failure = null;
+    const completed = [];
+    const flush = async () => {
+      const batch = completed.splice(0);
+      if (!batch.length) return;
+      await enqueue(async () => {
+        const nextAssets = new Map(assets);
+        for (const [id, asset] of batch) {
+          if (nextAssets.get(id)?.remote?.sha === asset.remote.sha) nextAssets.set(id, asset);
+        }
+        await persist(state, nextAssets, state.revision, cloudEnabled ? cloudInfo : undefined);
+        assets = nextAssets; updateOfflineStatus();
+      });
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, originals.length) }, async () => {
+        while (index < originals.length && !failure) {
+          const [id, asset] = originals[index++];
+          try {
+            completed.push([id, await ensureOriginal(id, asset)]);
+            if (completed.length >= 16) await flush();
+          } catch (error) { failure ||= error; }
+        }
+      }));
+      await flush();
+      if (failure) throw failure;
+    } catch (error) {
+      originalCacheError = errorMessage(error);
+      report(new Error(`Original image caching failed: ${originalCacheError} Browsing stays available online; do not go offline until Offline ready appears.`));
+    } finally {
+      cachingOriginals = false; updateOfflineStatus();
+      if (!originalCacheError && [...assets.values()].some(asset => !(asset.blob instanceof Blob))) cacheOriginals();
+    }
+  }
   async function packageBoard() {
     const data = { format: "moodboard", version: 1, state: clone(state), assets: [] };
     const snapshot = new Map(assets);
     validate(data.state, snapshot);
     for (const [id, asset] of snapshot) {
-      data.assets.push([id, { name: asset.name, width: asset.width, height: asset.height, data: await blobToDataURL(asset.blob) }]);
+      const original = await ensureOriginal(id, asset);
+      data.assets.push([id, { name: asset.name, width: asset.width, height: asset.height, data: await blobToDataURL(original.blob) }]);
     }
     return data;
   }
-  async function unpackBoard(data) {
+  async function unpackBoard(data, shared = false) {
     if (!data || data.format !== "moodboard" || data.version !== 1 || !Array.isArray(data.assets)) throw new Error("Choose a valid moodboard JSON backup.");
     const result = new Map();
     for (const entry of data.assets) {
       if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || result.has(entry[0])) throw new Error("The backup contains invalid or duplicate image records.");
       const [key, asset] = entry;
+      if (shared && asset && MoodboardFormat.validRemote(asset.remote)) { result.set(key, asset); continue; }
       if (!asset || typeof asset.data !== "string" || !/^data:image\/(png|jpeg|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=\r\n]+$/i.test(asset.data)) throw new Error("The backup contains an unsupported image.");
       const comma = asset.data.indexOf(","), mime = asset.data.slice(5, asset.data.indexOf(";"));
       const binary = atob(asset.data.slice(comma + 1));
@@ -1198,13 +1344,13 @@
     });
   }
   async function cloudRequest(method = "GET", body, conditional = false) {
-    const data = method === "GET" ? await github.read(conditional ? cloudInfo.revision : undefined) : await github.write(body.expectedRevision, body.board);
+    const data = method === "GET" ? await github.readCached(conditional ? cloudInfo.revision : undefined, new Map(assets)) : await github.write(body.expectedRevision, body.board);
     if (data === null) return null;
     if (!(data.revision === null || typeof data.revision === "string" && /^[a-f0-9]{40}$/.test(data.revision))) throw new Error("The save service returned an invalid revision.");
     return data;
   }
   async function installShared(record, merge = false) {
-    const imported = await unpackBoard(record.board);
+    const imported = await unpackBoard(record.board, true);
     const next = clone(imported.state), nextAssets = new Map(imported.assets);
     if (merge) {
       const assetIds = new Map();
@@ -1223,14 +1369,18 @@
       }
       next.revision = Math.max(next.revision, state.revision) + 1;
     }
+    if (!allItems().length && !activeTab(next).sections.some(section => section.items.length)) {
+      next.activeTab = next.tabs.find(tab => tab.sections.some(section => section.items.length))?.id || next.activeTab;
+    }
     validate(next, nextAssets);
     const existing = db ? await readDB("boards", next.id) : null;
-    const info = { collection: cloudConfig.collection, revision: record.revision, dirty: merge, lastSyncedAt: merge ? cloudInfo.lastSyncedAt ?? null : Date.now() };
+    const info = { collection: cloudConfig.collection, revision: record.revision, baseState: clone(imported.state), dirty: merge, lastSyncedAt: merge ? cloudInfo.lastSyncedAt ?? null : Date.now() };
     await persist(next, nextAssets, next.id === state.id ? state.revision : existing?.state.revision ?? -1, info);
     for (const url of urls.values()) URL.revokeObjectURL(url);
     urls.clear(); state = next; assets = nextAssets; cloudInfo = info;
     selection.clear(); sectionSelection.clear(); cursor = null; internalClipboard = []; cloudConflict = false;
     render(); channel?.postMessage({ id: state.id, revision: state.revision });
+    cacheOriginals();
     if (merge) notify("This device's existing images were added to the public board without removing shared images.");
   }
   async function syncCloud() {
@@ -1238,9 +1388,10 @@
     if (editor.open || viewer.open || deleteWarning.open || gesture) { scheduleCloud(1500); return; }
     if (!navigator.onLine) { cloudError = "Offline. Changes are queued on this device."; setSaveStatus(); return; }
     cloudSaving = true; setSaveStatus();
+    let retryWrite = false;
     try {
       await queue;
-      if (!cloudReady || !cloudInfo.dirty) {
+      {
         lastCloudRead = Date.now();
         const record = await cloudRequest("GET", undefined, Boolean(cloudInfo.revision));
         let deferred = false;
@@ -1257,13 +1408,22 @@
               error.conflict = true; throw error;
             } else if (cloudInfo.dirty) {
               if (cloudInfo.revision !== record.revision) {
-                if (JSON.stringify(await packageBoard()) === JSON.stringify(record.board)) await installShared(record);
-                else { const error = new Error("A newer shared save exists. Resolve the conflict in Settings; your local changes are safe."); error.conflict = true; throw error; }
+                const baseline = cloudInfo.baseState || await github.readState(cloudInfo.revision);
+                const merged = MoodboardFormat.mergeStates(baseline, state, record.board.state);
+                if (!merged) { const error = new Error("A newer shared save changes the same content. Resolve the conflict in Settings; your local changes are safe."); error.conflict = true; throw error; }
+                const imported = await unpackBoard(record.board, true), mergedAssets = new Map([...imported.assets, ...assets]);
+                const referenced = new Set(allItems(merged).map(item => item.assetId));
+                for (const id of mergedAssets.keys()) if (!referenced.has(id)) mergedAssets.delete(id);
+                validate(merged, mergedAssets);
+                const info = { ...cloudInfo, revision: record.revision, baseState: clone(record.board.state), lastSyncedAt: Date.now(), dirty: true };
+                await persist(merged, mergedAssets, state.revision, info);
+                state = merged; assets = mergedAssets; cloudInfo = info; cloudConflict = false;
+                render(); channel?.postMessage({ id: state.id, revision: state.revision }); cacheOriginals();
               }
             } else if (cloudInfo.revision !== record.revision || state.id !== record.board.state.id) await installShared(record);
           }
-          cloudReady = true; cloudError = "";
-          if (!cloudInfo.dirty) { cloudInfo.lastSyncedAt = Date.now(); await saveCloudMeta(); }
+          cloudReady = true; cloudError = ""; cacheOriginals();
+          if (!cloudInfo.dirty) { cloudInfo.lastSyncedAt = Date.now(); cloudInfo.baseState ||= clone(state); await saveCloudMeta(); }
         });
         if (deferred) { scheduleCloud(1500); return; }
       }
@@ -1274,6 +1434,7 @@
         const saved = await cloudRequest("PUT", { expectedRevision: cloudInfo.revision, board });
         await enqueue(async () => {
           cloudInfo.revision = saved.revision;
+          cloudInfo.baseState = clone(board.state);
           cloudInfo.dirty = state.id !== sentId || state.revision !== sentRevision;
           cloudInfo.lastSyncedAt = Date.now();
           await saveCloudMeta();
@@ -1281,8 +1442,9 @@
       }
       cloudError = ""; cloudReady = true;
     } catch (error) {
+      retryWrite = error.status === 409;
       if (error.authentication) github.disconnect();
-      cloudConflict = Boolean(error.conflict);
+      cloudConflict = Boolean(error.conflict && error.status !== 409);
       if (cloudError !== errorMessage(error)) {
         console.error(error);
         notify(`${cloudConflict ? "Shared save conflict" : "GitHub saving unavailable"}: ${errorMessage(error)} Your changes remain on this device.`);
@@ -1290,7 +1452,7 @@
       cloudError = errorMessage(error);
     } finally {
       cloudSaving = false; setSaveStatus();
-      if (cloudInfo.dirty && !cloudConflict && github.connected) scheduleCloud(cloudError ? 30000 : 1200);
+      if (cloudInfo.dirty && !cloudConflict && github.connected) scheduleCloud(retryWrite ? 1500 : cloudError ? 30000 : 1200);
     }
   }
   async function resolveShared(mode) {
@@ -1378,7 +1540,7 @@
       ["Captions", "Below Manage in Settings and backups are Caption switches for the entire caption, filenames, and URLs. Save to apply. Missing URLs have no placeholder text. Images with a source page also have a link icon on their hover controls and in their details menu, even if captions are hidden."],
       ["Organize", "Grid and List always show selection checkboxes while editing. On desktop, quickly drag from an image, checkbox, or empty space to select a rectangle; hold Ctrl/Command/Shift to add to the selection. All selects the current tab; the section icon expands selection to every represented section. Hold an image to rearrange it instead; on phones use its dotted grip. Move provides an accessible alternative."],
       ["Crop without losing originals", "Use an image's crop icon. The editor always shows the full original: draw a crop, move its frame, or resize its corners. Keyboard users can focus the frame: arrows move it and Shift+arrows resize in one-percent steps. Reset crop, Cancel, and Save share the bottom bar. Crops only affect the board, never original downloads or the full-image viewer, and are included in backups and portable copies."],
-      ["Tabs & sections", "Double-click a tab to rename, reposition, duplicate, or delete it. You can also focus it and press F2, or touch and hold it on a phone. Editing must be on. Use a section’s dots menu to organize that section."],
+      ["Tabs & sections", "Use the reorder button after the tab plus to drag tabs into order, then Save. Its handles also support Up/Down and Home/End. Double-click a tab to rename, reposition, duplicate, or delete it. You can also focus it and press F2, or touch and hold it on a phone. Editing must be on. Long section titles truncate visually; full names stay available in their tooltips and editors. Use a section’s dots menu to organize that section."],
       ["Save to computer or USB", "Save portable copy downloads a single HTML file containing the app, every original image, and your organization. Open it on a computer without internet. It is a snapshot: after editing, save a NEW portable copy. The app cannot silently rewrite files on your USB."],
       ["On your phone", "For reliable phone use, open the hosted HTTPS site while online, then use your browser’s Add to Home Screen / Install option and import a JSON backup. Open it once to finish caching before going offline. Mobile Files apps may only preview local HTML rather than run it; portable HTML is not a guaranteed phone installation method."],
       ["GitHub autosave", "The published board is publicly viewable. To upload changes, use Settings and backups → Enable auto-sync with a fine-grained token restricted to the moodboard repository and Contents: Read and write. The token lives only in this open tab and is sent only to GitHub; enable it again after a reload. Changes upload automatically, including removal of an original file when its last placement is deleted. Earlier copies remain in Git history. Conflicts keep your local changes until you resolve them in Settings."],
@@ -1394,7 +1556,7 @@
     openEditor("Settings", async (form) => {
       await enqueue(() => commit((next) => {
         next.settings.accent = form.get("accent");
-        for (const key of ["showCaptions", "showFilenames", "showUrls"]) next.settings[key] = form.has(key);
+        for (const key of ["showCaptions", "showFilenames", "showUrls", "showAddImages"]) next.settings[key] = form.has(key);
       }));
     });
     editor.classList.add("settings-editor");
@@ -1468,7 +1630,7 @@
       syncText(status, $("#save-status").textContent);
       manage.append(status);
     }
-    const total = [...assets.values()].reduce((sum, asset) => sum + asset.blob.size, 0);
+    const total = [...assets.values()].reduce((sum, asset) => sum + (asset.blob?.size || 0), 0);
     manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)}. Local autosave is not a backup; export a copy regularly.`));
     const couponSection = el("div", "coupon-code");
     const couponInput = field("Coupon code", "coupon", state.settings.couponCode ?? couponCode);
@@ -1505,7 +1667,7 @@
       control.setAttribute("aria-describedby", text.id); control.before(wrapper); wrapper.append(control, text);
     });
     info.setAttribute("aria-controls", descriptions.map((_, index) => `manage-help-${index}`).join(" "));
-    for (const [key, label, fallback] of [["showCaptions", "Caption", false], ["showFilenames", "Show filenames", false], ["showUrls", "Show URLs", true]]) {
+    for (const [key, label, fallback] of [["showCaptions", "Caption", false], ["showFilenames", "Show filenames", false], ["showUrls", "Show URLs", true], ["showAddImages", "Show Add image buttons", false]]) {
       const input = field(label, key, "on", "checkbox");
       input.checked = state.settings[key] ?? fallback; input.setAttribute("role", "switch"); input.closest(".field").classList.add("caption-toggle");
       if (key === "showCaptions") {
@@ -1565,6 +1727,7 @@
   $("#more").addEventListener("click", () => { if (state) settings(); });
   $("#help").addEventListener("click", guide);
   $("#new-tab").addEventListener("click", () => openTab());
+  $("#reorder-tabs").addEventListener("click", openTabOrder);
   $("#new-section").addEventListener("click", () => openSection());
   $("#bottom-add").addEventListener("click", () => openSection());
   $("#add-images").addEventListener("click", () => $("#image-files").click());
@@ -1653,7 +1816,7 @@
       const manifest = el("link"); manifest.rel = "manifest"; manifest.href = "./manifest.webmanifest"; document.head.append(manifest);
       await navigator.serviceWorker.register("./sw.js");
       await navigator.serviceWorker.ready;
-      $("#connection-status").textContent = "Offline ready";
+      shellReady = true; updateOfflineStatus();
     } catch (error) {
       console.error(error); $("#connection-status").textContent = "Offline cache unavailable · save a portable copy";
     }
@@ -1693,7 +1856,7 @@
         const stored = await readDB("meta", `cloud:${state.id}`);
         if (stored?.collection === cloudConfig.collection) cloudInfo = stored;
       }
-      render(); setupOffline();
+      render(); setupOffline(); if (cloudEnabled) cacheOriginals();
       if (cloudEnabled) {
         scheduleCloud(0);
         addEventListener("online", () => scheduleCloud(0));

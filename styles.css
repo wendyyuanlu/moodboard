@@ -136,3 +136,15 @@ body.dragging .app-header,body.selecting .app-header{transition:none}
 .coupon-code>.field{grid-column:1;grid-row:1}
 #copy-coupon{grid-column:2;grid-row:1}
 #save-coupon{grid-column:3;grid-row:1}
+.section-toggle strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;overflow-wrap:normal}
+.section-toggle .chevron{flex-shrink:0}
+body.hide-add-images #add-images,body.hide-add-images .section-upload{display:none}
+.tabs-row{gap:10px}
+#new-tab,#reorder-tabs{flex-shrink:0}
+.tab-order-list{max-height:50vh;overflow-y:auto;overscroll-behavior:contain}
+.tab-order-row{display:flex;align-items:center;gap:10px;min-height:48px;border-bottom:1px solid var(--line);background:var(--card)}
+.tab-order-handle{flex-shrink:0;touch-action:none;cursor:grab}
+.tab-order-handle svg{stroke-width:4}
+.tab-order-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab-order-row.reordering{background:var(--paper);outline:2px solid var(--accent);outline-offset:-2px}
+.tab-order-row.reordering .tab-order-handle{cursor:grabbing}
