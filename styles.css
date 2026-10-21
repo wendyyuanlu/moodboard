@@ -18,10 +18,19 @@ main{max-width:none;padding-inline:clamp(12px,2vw,32px)}.app-header,footer{paddi
 @media(max-width:600px){.layout-tools{flex-wrap:nowrap;gap:8px}.view-switch{flex-shrink:0}.zoom-label{flex:1;min-width:0}.zoom-label input{width:100%;min-width:35px}}
 .image-selection{position:absolute;top:0;left:0;width:40px;height:40px;z-index:1;cursor:pointer}.select-image{width:16.8px;height:16.8px}
 .images[data-layout=grid] .select-image,.images[data-layout=list] .select-image{opacity:1}body.edit-off .image-selection{display:none}
-.selection-bar button{display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:8px}.selection-bar svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}.selecting{user-select:none}
+.selection-bar button{display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;width:30px;height:30px;min-width:30px;min-height:30px;padding:4px}.selection-bar svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}.selection-summary{display:flex;align-items:center;gap:4px;flex-shrink:0}.selecting{user-select:none}
 .image-card{container-type:inline-size}
-@container(max-width:220px){.card-tools{position:static;justify-content:flex-end;padding:4px;flex-wrap:wrap}}
-@media(hover:none){.select-image{width:17.5px;height:17.5px}.image-selection{width:44px;height:44px}.selection-bar button{min-width:40px;min-height:40px}}
+.image-frame{position:relative;min-width:0;container-type:inline-size}
+.image-hit{min-height:64px}
+.image-card .image-frame .card-tools{position:absolute;top:auto;bottom:4px;right:4px;max-width:calc(100% - 8px);gap:2px;justify-content:flex-end;flex-wrap:wrap;padding:0;z-index:2}
+.card-tools .card-tool{display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;width:30px;height:30px;min-width:30px;min-height:30px;padding:0;font-size:16px}
+@container(max-width:120px){.image-card .image-frame .card-tools{flex-wrap:nowrap;overflow-x:auto;justify-content:flex-start;scrollbar-width:none}}
+.card-caption{padding:10px 12px}
+.images[data-layout=list] .image-card{display:flex;align-items:flex-start}
+.images[data-layout=list] .image-frame{width:min(var(--tile-size),40%);flex-shrink:0}
+.images[data-layout=list] .image-hit{display:block}
+.images[data-layout=list] .image-hit img,.images[data-layout=list] .image-frame .cropped-preview{width:100%}
+@media(hover:none){.select-image{width:17.5px;height:17.5px}.image-selection{width:44px;height:44px}}
 @media(max-width:600px){.app-header{flex-wrap:wrap;gap:6px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 .card-tool svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;vertical-align:middle}
@@ -36,10 +45,17 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
 .toolbar-icon,.source-button{display:inline-flex;align-items:center;justify-content:center;text-decoration:none}.source-button{flex-shrink:0}
 .view-switch{width:116px;height:38px}.view-switch button{display:flex;align-items:center;justify-content:center;flex:1;min-width:0;padding:0}.view-switch svg{width:16px;height:16px}
 .edit-toggle{width:116px;min-width:116px;height:38px;min-height:38px;padding:0;display:inline-flex;align-items:center;justify-content:center}.edit-toggle svg{transform:scaleX(-1)}
-.caption-toggle.field{display:flex;align-items:center;justify-content:space-between;gap:16px}
-.caption-toggle.field input{appearance:none;width:36px;height:22px;min-width:36px;padding:0;margin:0;border:1px solid var(--line);border-radius:20px;background:var(--line);position:relative;cursor:pointer}
-.caption-toggle.field input::before{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;border-radius:50%;background:var(--card)}
-.caption-toggle.field input:checked{background:var(--accent);border-color:var(--accent)}.caption-toggle.field input:checked::before{left:16px}
+.card-tools .card-tool svg{width:16px;height:16px}
+.source-field-label{display:flex;align-items:center;gap:6px;width:max-content}
+.source-go,.source-go svg{width:20px;height:20px}
+.caption-toggle.field{display:flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:8px;width:max-content;margin:8px 0;font-size:11px}
+.caption-heading span{font-size:13px;font-weight:600}
+.caption-toggle.field input{appearance:none;width:28px;height:16px;min-width:28px;padding:0;margin:0;border:1px solid var(--line);border-radius:20px;background:var(--line);position:relative;cursor:pointer}
+.caption-toggle.field input::before{content:"";position:absolute;width:10px;height:10px;left:2px;top:2px;border-radius:50%;background:var(--card)}
+.caption-toggle.field input:checked{background:var(--accent);border-color:var(--accent)}.caption-toggle.field input:checked::before{left:14px}
+.settings-editor .dialog-footer{justify-content:flex-start;margin:12px 0 18px}
+.settings-editor .dialog-footer>span{display:none}
+.settings-editor .dialog-footer .button{min-height:30px;padding:7px 11px;font-size:11px}
 .dialog-extra>.field{flex-basis:100%;margin-top:18px}
 .header-actions{flex-wrap:wrap;justify-content:flex-end}
 @media(max-width:600px){#save-status{display:block;flex-basis:100%;text-align:right}}

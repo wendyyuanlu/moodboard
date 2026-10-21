@@ -313,7 +313,9 @@ test("mobile layouts and zoom are responsive; touch hold-drag and swipe viewer",
   await page.waitForTimeout(150);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await expect.poll(() => titles(page)).toEqual(["landscape.png", "portrait.png", "third.png"]);
-  await page.getByRole("button", { name: "Open original image: landscape.png", exact: true }).tap();
+  const landscape = page.getByRole("button", { name: "Open original image: landscape.png", exact: true });
+  const landscapeBox = await landscape.boundingBox();
+  await landscape.tap({ position: { x: landscapeBox.width - 5, y: 5 } });
   await expect(page.locator("#viewer")).toBeVisible();
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 320, y: 400 }] });
   await page.waitForTimeout(80);
@@ -327,7 +329,7 @@ test("mobile layouts and zoom are responsive; touch hold-drag and swipe viewer",
   const image = page.getByRole("button", { name: "Open original image: third.png", exact: true });
   await image.evaluate((node) => node.scrollIntoView({ block: "center" }));
   const rect = await image.boundingBox();
-  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: rect.x + 50, y: rect.y + 35 }] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: rect.x + rect.width - 5, y: rect.y + 5 }] });
   await page.waitForTimeout(520);
   await expect(page.locator("#drag-preview")).toBeVisible();
   const beforeControl = page.getByRole("button", { name: "Paste before landscape.png", exact: true });
@@ -389,6 +391,7 @@ test("dragging across tabs moves originals and keeps the source collection intac
   await expect(tabTitle(page)).toHaveText("My inspiration");
   await expect(page.locator("#save-status")).toHaveText("Saved on this device");
   await page.getByRole("checkbox", { name: "Select A.png", exact: true }).check();
+  await page.getByRole("button", { name: "Drag A.png", exact: true }).evaluate(node => node.scrollIntoView({ block: "center" }));
   const source = await page.getByRole("button", { name: "Drag A.png", exact: true }).boundingBox();
   await page.mouse.move(source.x + 10, source.y + 10); await page.mouse.down(); await page.waitForTimeout(200);
   await expect(page.locator("#drag-preview")).toBeVisible();
@@ -902,7 +905,7 @@ test("Caption switches persist and source icon links remain independent of capti
     await expect(shortcut).toHaveCount(1); await expect(shortcut).toHaveAttribute("href", source);
     await expect(shortcut).toHaveAttribute("target", "_blank");
     await page.getByRole("button", { name: "Edit image original-name.png", exact: true }).click();
-    await expect(page.locator("#editor-extra .source-button")).toHaveAttribute("href", source);
+    await expect(page.locator(".source-field-label .source-button")).toHaveAttribute("href", source);
     await page.locator("#cancel-editor").click();
     await page.locator("#more").click();
     await expect(page.locator("#editor-fields").locator(":scope > *").first()).toHaveText("Caption");
@@ -934,6 +937,118 @@ test("Caption switches persist and source icon links remain independent of capti
     await page.getByRole("switch", { name: "Show URLs", exact: true }).check(); await saveDialog(page);
     await expect(page.locator(".source-link")).toBeVisible();
   });
+
+test("compact Caption actions stay together and 30px commands overlay originals and crops in every layout", async ({ page }) => {
+  await ready(page); const bytes = await png(page, 120, 160);
+  await paste(page, ["overlay.png", "neighbor.png"], bytes, "SourceURL:https://example.test/article\r\n");
+  await expect(page.locator(".image-card")).toHaveCount(2);
+  await page.locator("#more").click();
+  await expect(page.getByRole("heading", { name: "Caption", exact: true })).toBeVisible();
+  await expect(page.locator("#editor-fields > .dialog-footer")).toHaveCount(1);
+  expect(await page.locator(".dialog-footer").evaluate(footer => footer.previousElementSibling.querySelector("input").name)).toBe("showUrls");
+  for (const toggle of await page.locator(".caption-toggle").all()) {
+    const label = await toggle.locator("span").boundingBox(), input = await toggle.locator("input").boundingBox();
+    expect(input.width).toBe(28); expect(input.height).toBe(16);
+    expect(input.x - label.x - label.width).toBeCloseTo(8, 0);
+    expect(input.y + input.height / 2).toBeCloseTo(label.y + label.height / 2, 0);
+  }
+  await page.getByRole("switch", { name: "Show captions", exact: true }).uncheck();
+  await page.locator("#cancel-editor").click();
+  await expect(page.locator(".card-caption").first()).toBeVisible();
+  await page.locator("#more").click();
+  await expect(page.getByRole("switch", { name: "Show captions", exact: true })).toBeChecked();
+  await page.getByRole("switch", { name: "Show captions", exact: true }).uncheck(); await saveDialog(page);
+  await page.getByRole("button", { name: "Edit image overlay.png", exact: true }).click();
+  await expect(page.locator("#editor-form > .dialog-footer")).toHaveCount(1);
+  await expect(page.locator("#editor")).not.toHaveClass(/settings-editor/);
+  await page.locator("#cancel-editor").click();
+  await page.getByRole("button", { name: "Crop image overlay.png", exact: true }).click();
+  await setCrop(page, { x: 10, y: 10, width: 70, height: 80 }); await saveDialog(page);
+  await page.locator("#zoom").evaluate(slider => { slider.value = 150; slider.dispatchEvent(new Event("input", { bubbles: true })); slider.dispatchEvent(new Event("change", { bubbles: true })); });
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const layout of ["masonry", "grid", "list"]) {
+      await page.locator(`button[data-layout=${layout}]`).click();
+      for (const card of await page.locator(".image-card").all()) {
+        await card.hover();
+        await expect(card.locator(".card-caption")).toBeHidden();
+        const frame = await card.locator(".image-frame").boundingBox(), tools = await card.locator(".card-tools").boundingBox();
+        expect(tools.x).toBeGreaterThanOrEqual(frame.x);
+        expect(tools.y).toBeGreaterThanOrEqual(frame.y);
+        expect(tools.x + tools.width).toBeCloseTo(frame.x + frame.width - 4, 0);
+        expect(tools.y + tools.height).toBeCloseTo(frame.y + frame.height - 4, 0);
+        const bounds = await card.boundingBox();
+        expect(bounds.height).toBeCloseTo(frame.height + 2, 0);
+        for (const control of await card.locator(".card-tool").all()) {
+          const box = await control.boundingBox(); expect(box.width).toBe(30); expect(box.height).toBe(30);
+        }
+        for (const icon of await card.locator(".card-tools svg").all()) {
+          const box = await icon.boundingBox(); expect(box.width).toBe(16); expect(box.height).toBe(16);
+        }
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    }
+  }
+});
+
+test("photo details follow the compact field order and the 20px site shortcut follows URL edits", async ({ page, context }) => {
+  await ready(page); await paste(page, ["details.png"], await png(page), "SourceURL:https://example.test/original\r\n");
+  await page.getByRole("button", { name: "Edit image details.png", exact: true }).click();
+  expect(await page.locator("#editor-fields > .field > span").allTextContents()).toEqual(["Source page URL", "Section", "Position", "Notes", "Filename"]);
+  await expect(page.locator("#editor-fields > .hint")).toHaveCount(1);
+  await expect(page.locator("#editor-fields > .hint")).toContainText("Original:");
+  await expect(page.locator("#editor")).not.toContainText("Never resized or recompressed.");
+  await expect(page.locator("#editor")).not.toContainText("Saved automatically when the clipboard");
+  const link = page.getByRole("link", { name: "Go to site for details.png", exact: true });
+  await expect(link).toHaveAttribute("href", "https://example.test/original");
+  const box = await link.boundingBox(); expect(box.width).toBe(20); expect(box.height).toBe(20);
+  await page.locator("[name=sourceUrl]").fill("https://example.test/updated");
+  await expect(link).toHaveAttribute("href", "https://example.test/updated");
+  await context.route("https://example.test/**", route => route.fulfill({ contentType: "text/html", body: "<title>Source</title>" }));
+  const popupEvent = context.waitForEvent("page"); await link.click();
+  const popup = await popupEvent; await popup.waitForLoadState(); expect(popup.url()).toBe("https://example.test/updated"); await popup.close();
+  await page.locator("[name=sourceUrl]").fill("javascript:alert(1)");
+  await expect(link).toHaveCount(0);
+  await page.locator("[name=sourceUrl]").fill("");
+  await expect(page.locator(".source-go")).toHaveCount(0);
+  await page.locator("[name=notes]").fill("Placement notes."); await saveDialog(page);
+  expect((await snapshot(page)).state.tabs[0].sections[0].items[0]).toMatchObject({ notes: "Placement notes.", sourceUrl: "" });
+});
+
+test("selection copies share one original but keep independent crops and compact toolbar buttons", async ({ page }, testInfo) => {
+  await ready(page); const bytes = await png(page, 600, 400); await upload(page, ["shared-original.png"], bytes);
+  await page.getByRole("checkbox", { name: "Select shared-original.png", exact: true }).check();
+  await expect(page.locator(".selection-summary > #selection-count + #clear-selection")).toHaveCount(1);
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const control of await page.locator("#selection-bar button").all()) {
+      const box = await control.boundingBox(); expect(box.width).toBe(30); expect(box.height).toBe(30);
+    }
+    for (const icon of await page.locator("#selection-bar svg").all()) {
+      const box = await icon.boundingBox(); expect(box.width).toBe(20); expect(box.height).toBe(20);
+    }
+  }
+  await page.locator("#copy-selected").click(); await saveDialog(page);
+  await expect(page.locator(".image-card")).toHaveCount(2);
+  const copied = await snapshot(page), items = copied.state.tabs[0].sections[0].items;
+  expect(copied.assets).toHaveLength(1); expect(items[0].assetId).toBe(items[1].assetId); expect(items[0].id).not.toBe(items[1].id);
+  await page.locator(".image-card").first().getByRole("button", { name: "Crop image shared-original.png", exact: true }).click();
+  await setCrop(page, { x: 10, y: 20, width: 50, height: 60 }); await saveDialog(page);
+  expect((await snapshot(page)).state.tabs[0].sections[0].items[1].crop).toBeUndefined();
+  await page.locator(".image-card").last().getByRole("button", { name: "Crop image shared-original.png", exact: true }).click();
+  await setCrop(page, { x: 30, y: 10, width: 60, height: 70 }); await saveDialog(page);
+  const saved = await snapshot(page), cropped = saved.state.tabs[0].sections[0].items;
+  expect(cropped[0].crop).toEqual({ x: .1, y: .2, width: .5, height: .6 });
+  expect(cropped[1].crop).toEqual({ x: .3, y: .1, width: .6, height: .7 });
+  expect(saved.assets).toHaveLength(1); expect(Buffer.from(saved.assets[0][1].bytes).equals(bytes)).toBe(true);
+  const event = page.waitForEvent("download"); await page.locator("#save-portable").click();
+  const output = testInfo.outputPath("shared-original.html"); await (await event).saveAs(output);
+  const payload = JSON.parse(fs.readFileSync(output, "utf8").match(/<script id="portable-data" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+  expect(payload.assets).toHaveLength(1); expect(payload.state.tabs[0].sections[0].items).toEqual(cropped);
+  expect(Buffer.from(payload.assets[0][1].data.split(",")[1], "base64").equals(bytes)).toBe(true);
+  await page.getByRole("checkbox", { name: "Select shared-original.png", exact: true }).first().check();
+  await page.locator("#clear-selection").click(); await expect(page.locator("#selection-bar")).toBeHidden();
+});
 
 test("authenticated GitHub saves reach public devices, preserve bytes, and delete the last original file", async ({ page, browser }) => {
   const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);

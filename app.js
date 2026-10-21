@@ -398,7 +398,8 @@
     tools.append(drag, remove, crop);
     const sourceButton = sourceLink(item, "card-tool source-button");
     if (sourceButton) tools.append(sourceButton);
-    tools.append(edit); card.append(hit, caption, checkArea, tools); tile.append(card);
+    const frame = el("div", "image-frame");
+    tools.append(edit); frame.append(hit, checkArea, tools); card.append(frame, caption); tile.append(card);
     return tile;
   }
   function switchTab(tabId) {
@@ -419,7 +420,8 @@
   }
   function hint(text) { $("#editor-fields").append(el("p", "hint", text)); }
   function openEditor(title, save, remove) {
-    editor.classList.remove("crop-editor");
+    $("#editor-form").append($(".dialog-footer"));
+    editor.classList.remove("crop-editor", "settings-editor");
     editorSuccess = "Saved to your space.";
     editorAction = save; editorDelete = remove;
     $("#editor-form").reset(); $("#editor-fields").replaceChildren(); $("#editor-extra").replaceChildren();
@@ -607,7 +609,7 @@
     const item = source.items.find((entry) => entry.id === itemId);
     openEditor("The details", async (form) => {
       const title = form.get("title").trim();
-      if (!title) throw new Error("Please enter an image title.");
+      if (!title) throw new Error("Please enter a filename.");
       const enteredSource = form.get("sourceUrl").trim();
       const sourceUrl = sourcePageURL(enteredSource);
       if (enteredSource && !sourceUrl) throw new Error("Use a full HTTP or HTTPS source page URL without a username or password.");
@@ -616,20 +618,28 @@
         transfer(next, [itemId], { sectionId: form.get("section"), index: Number(form.get("position")) - 1 }, false, [updated]);
       }));
     }, () => removeItems([itemId]));
-    const title = field("Title / filename", "title", item.title); title.required = true; title.maxLength = 300;
     const sourceUrl = field("Source page URL", "sourceUrl", item.sourceUrl || "", "url"); sourceUrl.maxLength = 8192;
-    hint("Saved automatically when the clipboard includes explicit page metadata. Screenshots and most copied images do not include it; paste the page address here to add or correct it.");
-    const notes = field("Notes", "notes", item.notes, "textarea"); notes.maxLength = 10000;
+    const sourceHeading = sourceUrl.previousElementSibling; sourceHeading.classList.add("source-field-label");
+    const updateSourceLink = () => {
+      sourceHeading.querySelector(".source-go")?.remove();
+      const link = sourceLink({ ...item, sourceUrl: sourceUrl.value }, "source-button source-go");
+      if (link) {
+        link.title = "Go to site"; link.setAttribute("aria-label", `Go to site for ${item.title}`);
+        link.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7M21 3 11 13M10 5H4v15h15v-6"/></svg>';
+        sourceHeading.append(link);
+      }
+    };
+    sourceUrl.addEventListener("input", updateSourceLink); updateSourceLink();
     const section = field("Section", "section", source.id, "text", sectionOptions());
     positionField(source.items.findIndex((entry) => entry.id === itemId) + 1, source.items.length);
     section.addEventListener("change", () => {
       const count = findSection(section.value).items.filter((entry) => entry.id !== itemId).length + 1;
       $("[name=position]", editor).max = $("[name=position]", editor).value = count;
     });
+    const notes = field("Notes", "notes", item.notes, "textarea"); notes.maxLength = 10000;
+    const title = field("Filename", "title", item.title); title.required = true; title.maxLength = 300;
     const asset = assets.get(item.assetId);
-    hint(`Original: ${asset.width} × ${asset.height} pixels · ${sizeText(asset.blob.size)} · ${asset.blob.type}. Never resized or recompressed.`);
-    const sourceButton = sourceLink(item, "button source-button");
-    if (sourceButton) $("#editor-extra").append(sourceButton);
+    hint(`Original: ${asset.width} × ${asset.height} pixels · ${sizeText(asset.blob.size)} · ${asset.blob.type}.`);
   }
   function transfer(data, ids, target, copy, replacements) {
     const wanted = new Set(ids);
@@ -1178,6 +1188,7 @@
       for (const manifest of html.querySelectorAll("link[rel=manifest]")) manifest.remove();
       find("#portable-data").textContent = JSON.stringify(data).replace(/</g, "\\u003c");
       find("#cloud-config").textContent = "null";
+      find("#editor-form").append(find(".dialog-footer"));
       for (const selector of ["#sections", "#tabs", "#editor-fields", "#editor-extra"]) find(selector).replaceChildren();
       for (const node of html.querySelectorAll("dialog")) node.removeAttribute("open");
       for (const selector of ["#notice", "#selection-bar", "#drag-preview", "#rubber-band", "#storage-warning", "#editor-error"]) find(selector).hidden = true;
@@ -1229,11 +1240,18 @@
         for (const key of ["showCaptions", "showFilenames", "showUrls"]) next.settings[key] = form.has(key);
       }));
     });
-    $("#editor-fields").append(el("h3", "guide-heading", "Caption"));
-    for (const [key, label, fallback] of [["showCaptions", "Show captions", true], ["showFilenames", "Show filenames", false], ["showUrls", "Show URLs", true]]) {
+    editor.classList.add("settings-editor");
+    for (const [key, label, fallback] of [["showCaptions", "Caption", true], ["showFilenames", "Show filenames", false], ["showUrls", "Show URLs", true]]) {
       const input = field(label, key, "on", "checkbox");
       input.checked = state.settings[key] ?? fallback; input.setAttribute("role", "switch"); input.closest(".field").classList.add("caption-toggle");
+      if (key === "showCaptions") {
+        input.setAttribute("aria-label", "Show captions");
+        input.closest(".field").classList.add("caption-heading");
+        const heading = input.previousElementSibling;
+        heading.setAttribute("role", "heading"); heading.setAttribute("aria-level", "3");
+      }
     }
+    $("#editor-fields").append($(".dialog-footer"));
     if (cloudEnabled) {
       $("#editor-fields").append(el("h3", "guide-heading", "Shared GitHub board"));
       hint("Anyone can view. Connect GitHub with repository write access to upload edits automatically. Originals and organization are saved to the board branch; deletions remain in Git history. Offline edits wait on this device. No separate server or tunnel is required.");
