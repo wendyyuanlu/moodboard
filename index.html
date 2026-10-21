@@ -2454,7 +2454,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
           if (payload.embeddedAssetCount !== chunks.length) throw new Error("The portable copy is incomplete. Your saved board has not been replaced.");
           const originals = new Map();
           for (const chunk of chunks) {
-            const entry = JSON.parse(chunk.textContent); chunk.remove(); await unpackAsset(entry, originals);
+            const entry = JSON.parse(chunk.textContent); chunk.textContent = ""; chunk.remove(); await unpackAsset(entry, originals);
           }
           validate(payload.state, originals); embedded = { state: payload.state, assets: originals };
         } else embedded = await unpackBoard(payload);
