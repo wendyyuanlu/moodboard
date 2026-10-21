@@ -52,6 +52,10 @@ async function editTab(page) {
   await page.locator(".tab[aria-current=true]").dblclick();
   await expect(page.locator("#editor")).toBeVisible();
 }
+async function setSpacing(page, value) {
+  await page.locator("#spacing").fill(String(value)); await page.locator("#spacing").press("Enter");
+  await expect(page.locator("#card-spacing")).toHaveAttribute("title", `Card spacing: ${value}px`);
+}
 function tabTitle(page) { return page.locator(".tab[aria-current=true] .tab-name"); }
 async function newSection(page, name) {
   await page.locator("#bottom-add").click();
@@ -73,7 +77,11 @@ async function snapshot(page) {
     });
     const id = await read("meta", "active"), record = await read("boards", id);
     const assets = [];
-    for (const [key, asset] of record.assets) assets.push([key, { ...asset, bytes: asset.blob ? [...new Uint8Array(await asset.blob.arrayBuffer())] : null, blob: null }]);
+    for (const [key, asset] of record.assets) {
+      const blob = asset.storageKey ? (await read("boards", asset.storageKey)).blob : asset.blob;
+      const { storageKey, ...metadata } = asset;
+      assets.push([key, { ...metadata, bytes: blob ? [...new Uint8Array(await blob.arrayBuffer())] : null, blob: null }]);
+    }
     db.close(); return { state: record.state, assets };
   });
 }
@@ -409,25 +417,29 @@ test("bulk copy/move, keyboard copy, image editing and edit-off protection", asy
   test("card spacing controls change real gaps in every layout and persist offline", async ({ page, browser }, testInfo) => {
     await ready(page); await page.setViewportSize({ width: 900, height: 900 });
     await upload(page, ["gap-a.png", "gap-b.png", "gap-c.png", "gap-d.png"], await png(page));
-    await page.locator("#increase-spacing").click();
-    await expect.poll(async () => (await snapshot(page)).state.settings.spacing).toBe(20);
+    await setSpacing(page, 22);
+    await expect.poll(async () => (await snapshot(page)).state.settings.spacing).toBe(22);
     for (const mode of ["masonry", "grid", "list"]) {
       await page.locator(`button[data-layout=${mode}]`).click();
       await expect.poll(() => page.locator(".image-card").evaluateAll(cards => {
         const boxes = cards.map(card => card.getBoundingClientRect());
         const sameRow = boxes.slice(1).find(box => Math.abs(box.y - boxes[0].y) < 1);
         return sameRow ? Math.round(sameRow.x - boxes[0].right) : Math.round(boxes[1].y - boxes[0].bottom);
-      })).toBe(20);
+      })).toBe(22);
     }
-    await page.reload(); await expect(page.locator("#card-spacing")).toHaveAttribute("title", "Card spacing: 20px");
-    for (let i = 0; i < 10; i++) { await page.locator("#decrease-spacing").click(); await expect.poll(async () => (await snapshot(page)).state.settings.spacing).toBe(18 - i * 2); }
-    await expect(page.locator("#decrease-spacing")).toBeDisabled();
+    await page.reload(); await expect(page.locator("#card-spacing")).toHaveAttribute("title", "Card spacing: 22px");
+    for (const value of ["", "-1", "41", "2.5"]) {
+      await page.locator("#spacing").fill(value); await page.locator("#spacing").press("Enter");
+      expect((await snapshot(page)).state.settings.spacing).toBe(22);
+      expect(await page.locator("#spacing").evaluate(input => input.validity.valid)).toBe(false);
+    }
+    await setSpacing(page, 0);
     const event = page.waitForEvent("download"); await page.locator("#save-portable").click();
     const output = testInfo.outputPath("spacing-offline.html"); await (await event).saveAs(output);
     const offline = await browser.newContext({ offline: true }), reader = await offline.newPage();
     await reader.goto(pathToFileURL(output).href);
     await expect(reader.locator("#card-spacing")).toHaveAttribute("title", "Card spacing: 0px");
-    await reader.locator("#increase-spacing").click(); await expect(reader.locator("#card-spacing")).toHaveAttribute("title", "Card spacing: 2px");
+    await setSpacing(reader, 7);
     await offline.close();
   });
 
@@ -451,10 +463,10 @@ test("bulk copy/move, keyboard copy, image editing and edit-off protection", asy
     await expect(page.locator("#selection-count")).toHaveText("1 selected");
     await expect(page.locator(".image-card").nth(1).locator(".select-image")).toBeChecked();
   });
-test("section upload follows its checkbox and uses the same 20px header icon", async ({ page }) => {
+test("section header keeps selection, drag and the matching 20px upload icon together", async ({ page }) => {
   await ready(page); await showUploadButtons(page); await newSection(page, "Upload target");
   const section = page.locator(".section").last();
-  expect(await section.locator(".section-actions").evaluate(node => [...node.children].map(child => child.className))).toEqual(["section-selection", "icon-button section-upload", "icon-button"]);
+  expect(await section.locator(".section-actions").evaluate(node => [...node.children].map(child => child.className))).toEqual(["section-selection", "icon-button section-drag", "icon-button section-upload", "icon-button"]);
   const uploadIcon = section.locator(".section-upload svg");
   expect(await uploadIcon.boundingBox()).toMatchObject({ width: 20, height: 20 });
   expect(await uploadIcon.innerHTML()).toBe(await page.locator("#add-images svg").innerHTML());
@@ -687,6 +699,119 @@ test("portable export works without local storage and failed saves leave the boa
   await expect.poll(() => titles(page)).toEqual(["safe.png"]);
   await page.reload();
   await expect.poll(() => titles(page)).toEqual(["safe.png"]);
+});
+
+test("closed database connections recover without losing edits or rewriting cached originals", async ({ page }) => {
+  await ready(page); const bytes = await png(page); await upload(page, ["safe-original.png"], bytes);
+  await page.evaluate(() => {
+    const transaction = IDBDatabase.prototype.transaction, put = IDBObjectStore.prototype.put;
+    let closeOnce = true;
+    window.originalRewrites = 0;
+    IDBDatabase.prototype.transaction = function (...args) {
+      if (args[1] === "readwrite" && closeOnce) { closeOnce = false; this.close(); }
+      return transaction.apply(this, args);
+    };
+    IDBObjectStore.prototype.put = function (value, key) {
+      if (this.name === "boards" && (value.blob instanceof Blob || value.assets?.some(([, asset]) => asset.blob instanceof Blob))) {
+        window.originalRewrites++;
+        throw new DOMException("Image writes are forbidden during metadata edits.", "QuotaExceededError");
+      }
+      return put.call(this, value, key);
+    };
+  });
+  await page.context().setOffline(true);
+  await setSpacing(page, 22);
+  await expect(page.locator("#card-spacing")).toHaveAttribute("title", "Card spacing: 22px");
+  await newTab(page, "Keep this tab");
+  await page.locator(".tab").filter({ hasText: "My inspiration" }).click();
+  await expect(tabTitle(page)).toHaveText("My inspiration");
+  await editTab(page); page.once("dialog", dialog => dialog.accept()); await page.locator("#editor-delete").click();
+  await expect(page.locator("#editor")).not.toBeVisible();
+  await expect(page.locator(".tab")).toHaveCount(1);
+  expect(await page.evaluate(() => window.originalRewrites)).toBe(0);
+  expect(await page.evaluate(async () => {
+    const db = await new Promise(resolve => { const r = indexedDB.open("moodboard-portable", 1); r.onsuccess = () => resolve(r.result); });
+    const keys = await new Promise(resolve => { const r = db.transaction("boards").objectStore("boards").getAllKeys(); r.onsuccess = () => resolve(r.result); });
+    db.close(); return keys.filter(Array.isArray);
+  })).toEqual([]);
+  await page.reload(); await expect(page.locator(".tab-name")).toHaveText("Keep this tab");
+  await expect(page.locator("#card-spacing")).toHaveAttribute("title", "Card spacing: 22px");
+});
+
+test("legacy inline originals migrate without redownloading or changing their bytes", async ({ page }) => {
+  await ready(page); const bytes = await png(page); await upload(page, ["legacy.png"], bytes);
+  await page.evaluate(async () => {
+    const db = await new Promise(resolve => { const r = indexedDB.open("moodboard-portable", 1); r.onsuccess = () => resolve(r.result); });
+    const read = key => new Promise(resolve => { const r = db.transaction("boards").objectStore("boards").get(key); r.onsuccess = () => resolve(r.result); });
+    const id = await new Promise(resolve => { const r = db.transaction("meta").objectStore("meta").get("active"); r.onsuccess = () => resolve(r.result); });
+    const board = await read(id), asset = board.assets[0][1], key = asset.storageKey;
+    asset.blob = (await read(key)).blob; delete asset.storageKey;
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("boards", "readwrite"), store = tx.objectStore("boards");
+      store.put(board, id); store.delete(key); tx.oncomplete = resolve; tx.onabort = () => reject(tx.error);
+    }); db.close();
+  });
+  await page.reload(); await expect(page.locator(".image-card")).toHaveCount(1);
+  await setSpacing(page, 22);
+  await expect(page.locator("#card-spacing")).toHaveAttribute("title", "Card spacing: 22px");
+  expect(Buffer.from((await snapshot(page)).assets[0][1].bytes).equals(bytes)).toBe(true);
+  expect(await page.evaluate(async () => {
+    const db = await new Promise(resolve => { const r = indexedDB.open("moodboard-portable", 1); r.onsuccess = () => resolve(r.result); });
+    const id = await new Promise(resolve => { const r = db.transaction("meta").objectStore("meta").get("active"); r.onsuccess = () => resolve(r.result); });
+    const record = await new Promise(resolve => { const r = db.transaction("boards").objectStore("boards").get(id); r.onsuccess = () => resolve(r.result); });
+    db.close(); return Boolean(record.assets[0][1].storageKey) && !record.assets[0][1].blob;
+  })).toBe(true);
+});
+
+test("low storage and actual original-write quota errors pause caching without blocking phone edits", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
+  try {
+    for (const failWrite of [false, true]) {
+      const context = await browser.newContext({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, serviceWorkers: "block" });
+      try {
+        await context.addInitScript(failWrite => {
+          Object.defineProperty(navigator.storage, "estimate", { value: async () => ({ quota: 128 * 1024 * 1024, usage: (failWrite ? 1 : 120) * 1024 * 1024 }) });
+          if (failWrite) {
+            const put = IDBObjectStore.prototype.put;
+            IDBObjectStore.prototype.put = function (value, key) {
+              if (value.blob instanceof Blob) throw new DOMException("Test device storage is full.", "QuotaExceededError");
+              return put.call(this, value, key);
+            };
+          }
+        }, failWrite);
+        await shared.connect(context); const reader = await context.newPage(); await reader.goto("http://127.0.0.1:8085/");
+        await expect(reader.locator(".image-card")).toHaveCount(1);
+        await expect(reader.locator("#connection-status")).toContainText("Original caching paused");
+        await expect(reader.locator("#storage-warning")).toContainText("not fully available offline");
+        const before = (await snapshot(reader)).state.settings.spacing ?? 10;
+        await setSpacing(reader, before + 4);
+        await expect(reader.locator("#card-spacing")).toHaveAttribute("title", `Card spacing: ${before + 4}px`);
+        await newTab(reader, "Phone edit");
+        expect((await snapshot(reader)).state.tabs.some(tab => tab.name === "Phone edit")).toBe(true);
+        expect((await snapshot(reader)).assets[0][1].bytes).toBeNull();
+        await reader.reload(); await expect(reader.locator(".tab").filter({ hasText: "Phone edit" })).toHaveCount(1);
+      } finally { await context.close(); }
+    }
+  } finally { await shared.close(); }
+});
+
+test("failed staged imports clean temporary originals without replacing the active board", async ({ page }) => {
+  await ready(page); const bytes = await png(page); await upload(page, ["keep.png"], bytes);
+  const before = await snapshot(page);
+  const keys = () => page.evaluate(async () => {
+    const db = await new Promise(resolve => { const r = indexedDB.open("moodboard-portable", 1); r.onsuccess = () => resolve(r.result); });
+    const keys = await new Promise(resolve => { const r = db.transaction("boards").objectStore("boards").getAllKeys(); r.onsuccess = () => resolve(r.result); });
+    db.close(); return JSON.stringify(keys);
+  });
+  const originalKeys = await keys(), original = before.assets[0][1];
+  const data = { name: original.name, width: original.width, height: original.height, data: `data:image/png;base64,${bytes.toString("base64")}` };
+  const header = { format: "moodboard-lines", version: 1, state: before.state, assetCount: 17 };
+  const records = Array.from({ length: 16 }, (_, index) => [`staged-${index}`, data]);
+  const lines = [header, ...records, records[0]].map(record => JSON.stringify(record)).join("\n");
+  await page.locator("#backup-file").setInputFiles({ name: "invalid.jsonl", mimeType: "application/x-ndjson", buffer: Buffer.from(lines) });
+  await expect(page.locator("#notice")).toContainText("Import failed");
+  expect(await snapshot(page)).toEqual(before);
+  expect(await keys()).toBe(originalKeys);
 });
 
 test("hover-only desktop checkboxes and masonry fill horizontally across the entire board", async ({ page }) => {
@@ -1946,6 +2071,241 @@ test("touch tab dragging supports cancellation and persistence", async ({ browse
   } finally { await context.close(); }
 });
 
+test("collapse-all and details rearranging preserve state and keep current entries bold", async ({ page }) => {
+  await ready(page); await newSection(page, "Second"); await newSection(page, "Third");
+  await page.locator("#collapse-sections").click();
+  await expect(page.locator(".section.collapsed")).toHaveCount(3);
+  await expect(page.locator("#collapse-sections")).toBeDisabled();
+  await page.reload(); await expect(page.locator(".section.collapsed")).toHaveCount(3);
+  await page.getByRole("button", { name: "Edit section Third", exact: true }).click();
+  await expect(page.locator("#editor .hint")).toHaveCount(0);
+  const details = page.locator("#editor .rearrange-control");
+  await expect(details).not.toHaveAttribute("open");
+  expect(await details.evaluate(node => Boolean(node.previousElementSibling.querySelector("[name=position]")))).toBe(true);
+  await details.locator("summary").click(); await expect(details.locator("strong")).toHaveText("Third");
+  await details.locator(".tab-order-handle").last().press("Home");
+  await expect(page.locator("#editor [name=position]")).toHaveValue("1");
+  await saveDialog(page); await expect(page.locator(".section-toggle strong").first()).toHaveText("Third");
+  await newTab(page, "Second tab"); await newTab(page, "Third tab"); await editTab(page);
+  await expect(page.locator("#editor .hint")).toHaveCount(0);
+  await expect(details).not.toHaveAttribute("open");
+  await details.locator("summary").click(); await expect(details.locator("strong")).toHaveText("Third tab");
+  await details.locator(".tab-order-handle").last().press("Home");
+  await page.locator("#cancel-editor").click(); await expect(page.locator(".tab-name").first()).toHaveText("My inspiration");
+  await editTab(page); await details.locator("summary").click();
+  await details.locator(".tab-order-handle").last().press("Home"); await saveDialog(page);
+  await expect(page.locator(".tab-name").first()).toHaveText("Third tab");
+  await page.reload(); await expect(page.locator(".tab-name").first()).toHaveText("Third tab");
+  await page.locator(".tab").filter({ hasText: "My inspiration" }).click();
+  await expect(tabTitle(page)).toHaveText("My inspiration");
+  await page.getByRole("button", { name: "Edit section Third", exact: true }).click();
+  const target = (await snapshot(page)).state.tabs.find(tab => tab.name === "Second tab").id;
+  await page.locator("#editor [name=tab]").selectOption(target);
+  await expect(details).not.toHaveAttribute("open");
+  await details.locator("summary").click(); await expect(details.locator(".tab-order-name")).toHaveText(["Third"]);
+  await saveDialog(page); await expect(tabTitle(page)).toHaveText("Second tab");
+  await expect(page.locator(".section-toggle strong")).toHaveText(["Third"]);
+});
+
+test("phone section header dragging cancels safely and persists dropped and keyboard orders", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  try {
+    const page = await context.newPage(); await ready(page); await newSection(page, "Second"); await newSection(page, "Third");
+    const before = (await snapshot(page)).state.tabs[0].sections.map(section => [section.id, section.collapsed]);
+    const client = await context.newCDPSession(page);
+    const drag = async cancel => {
+      const from = await page.locator(".section-drag").last().boundingBox(), to = await page.locator(".section-header").first().boundingBox();
+      const x = from.x + from.width / 2;
+      await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: from.y + from.height / 2 }] });
+      await client.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: to.y + 2 }] });
+      await expect(page.locator(".section-toggle strong").first()).toHaveText("Third");
+      await client.send("Input.dispatchTouchEvent", { type: cancel ? "touchCancel" : "touchEnd", touchPoints: [] });
+    };
+    await drag(true); await expect(page.locator(".section-toggle strong").first()).toHaveText("The little things");
+    expect((await snapshot(page)).state.tabs[0].sections.map(section => [section.id, section.collapsed])).toEqual(before);
+    await drag(false); await expect.poll(async () => (await snapshot(page)).state.tabs[0].sections[0].name).toBe("Third");
+    expect((await snapshot(page)).state.tabs[0].sections.every(section => !section.collapsed)).toBe(true);
+    await page.reload(); await expect(page.locator(".section-toggle strong").first()).toHaveText("Third");
+    await page.locator(".section-drag").first().press("End");
+    await expect.poll(async () => (await snapshot(page)).state.tabs[0].sections.at(-1).name).toBe("Third");
+    const savedOrder = (await snapshot(page)).state.tabs[0].sections.map(section => section.name);
+    await page.evaluate(() => {
+      const transaction = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (...args) {
+        const tx = transaction.apply(this, args);
+        if (args[1] === "readwrite") queueMicrotask(() => tx.abort());
+        return tx;
+      };
+    });
+    await page.locator(".section-drag").last().press("Home");
+    await expect(page.locator("#notice")).toContainText("Could not save");
+    await expect(page.locator(".section-toggle strong")).toHaveText(savedOrder);
+    await page.locator("#edit-toggle").click(); await expect(page.locator(".section-drag").first()).not.toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  } finally { await context.close(); }
+});
+
+test("lightbox has square icon controls and links to every other section sharing the original", async ({ page }) => {
+  await ready(page); const bytes = await png(page); await upload(page, ["everywhere.png"], bytes);
+  const saved = await snapshot(page), source = saved.state.tabs[0].sections[0].items[0];
+  source.sourceUrl = "https://example.test/story"; source.sourceImageUrl = "https://example.test/original.png";
+  saved.state.tabs[0].sections.push({ id: "also-here", name: "Also here", collapsed: false, items: [{ ...source, id: "copy-a" }, { ...source, id: "copy-b" }] });
+  saved.state.tabs.push({ id: "elsewhere", name: "Elsewhere", sections: [{ id: "far-away", name: "Far away", collapsed: true, items: [{ ...source, id: "copy-c" }] }] });
+  const [id, original] = saved.assets[0];
+  const lines = [
+    { format: "moodboard-lines", version: 1, state: saved.state, assetCount: 1 },
+    [id, { name: original.name, width: original.width, height: original.height, data: `data:image/png;base64,${bytes.toString("base64")}` }]
+  ].map(record => JSON.stringify(record)).join("\n");
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator("#backup-file").setInputFiles({ name: "locations.jsonl", mimeType: "application/x-ndjson", buffer: Buffer.from(lines) });
+  await expect(page.locator("#notice")).toContainText("Backup imported");
+  await expect(page.locator(".image-card .source-button").first().locator("svg circle")).toHaveCount(1);
+  for (const width of [1000, 375]) {
+    await page.setViewportSize({ width, height: 812 });
+    await page.locator(".image-hit").first().click();
+    await expect(page.locator("#viewer-source")).toHaveAccessibleName("Source webpage");
+    await expect(page.locator("#viewer-source svg circle")).toHaveCount(1);
+    await expect(page.locator("#viewer-original")).toHaveAccessibleName("Open original");
+    await expect(page.locator("#viewer-original")).toHaveAttribute("href", source.sourceImageUrl);
+    await expect(page.locator("#viewer-zoom")).toHaveAccessibleName("Actual size");
+    const expand = await page.locator("#viewer-zoom svg").innerHTML();
+    await page.locator("#viewer-zoom").click(); await expect(page.locator("#viewer-zoom")).toHaveAccessibleName("Fit image");
+    expect(await page.locator("#viewer-zoom svg").innerHTML()).not.toBe(expand);
+    const sizes = await page.locator("#viewer .viewer-button:visible").evaluateAll(buttons => buttons.map(button => { const rect = button.getBoundingClientRect(); return [rect.width, rect.height]; }));
+    expect(sizes.every(([width, height]) => width === 40 && height === 40)).toBe(true);
+    await expect(page.locator("#viewer-locations")).not.toHaveAttribute("open");
+    await page.locator("#viewer-locations-summary").click();
+    await expect(page.locator(".viewer-location")).toHaveText(["My inspiration / Also here", "Elsewhere / Far away"]);
+    if (width === 1000) await page.locator("#viewer-close").click();
+  }
+  await page.getByRole("button", { name: "Elsewhere / Far away", exact: true }).click();
+  await expect(page.locator("#viewer")).not.toBeVisible(); await expect(tabTitle(page)).toHaveText("Elsewhere");
+  await expect(page.locator(".section")).not.toHaveClass(/collapsed/);
+  expect((await snapshot(page)).state.tabs[1].sections[0].collapsed).toBe(false);
+});
+
+test("save status uses available header width without wrapping or pushing controls offscreen", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
+  try {
+    const device = await shared.open(); await setSpacing(device.page, 23);
+    await expect(device.page.locator("#save-status")).toContainText("Enable auto-sync");
+    for (const width of [1200, 800, 390, 320]) {
+      await device.page.setViewportSize({ width, height: 844 });
+      const metrics = await device.page.locator("#save-status").evaluate(node => {
+        const style = getComputedStyle(node), rect = node.getBoundingClientRect();
+        return { whitespace: style.whiteSpace, maxWidth: style.maxWidth, height: rect.height, lineHeight: parseFloat(style.lineHeight), width: rect.width, scrollWidth: node.scrollWidth };
+      });
+      expect(metrics.whitespace).toBe("nowrap"); expect(metrics.maxWidth).toBe("none");
+      expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight + 1);
+      if (width >= 800) { expect(metrics.width).toBeGreaterThan(110); expect(metrics.width + 1).toBeGreaterThanOrEqual(metrics.scrollWidth); }
+      const right = await device.page.locator("#save-portable").evaluate(node => node.getBoundingClientRect().right);
+      expect(right).toBeLessThanOrEqual(width);
+      await expect.poll(() => device.page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    }
+  } finally { await shared.close(); }
+});
+
+test("populated section ends use slim paste gaps while empty sections keep large targets", async ({ page }) => {
+  await ready(page); const bytes = await png(page); await upload(page, ["first.png"], bytes);
+  await setSpacing(page, 12); await newSection(page, "Empty");
+  const populated = page.locator(".section").first(), empty = page.locator(".section").last();
+  const end = populated.locator(".section-end");
+  await expect(end).toHaveClass(/insert-slot.*section-end-slim/);
+  expect(await end.evaluate(node => node.getBoundingClientRect().height)).toBe(12);
+  expect(await populated.locator(".tile .insert-slot").evaluate(node => node.getBoundingClientRect().height)).toBe(12);
+  expect(await empty.locator(".section-end").evaluate(node => node.getBoundingClientRect().height)).toBeGreaterThanOrEqual(132);
+  await end.click(); await expect(end).toHaveClass(/chosen/);
+  await paste(page, ["last.png"], bytes);
+  await expect(populated.locator(".card-caption h3")).toHaveText(["first.png", "last.png"]);
+  await expect(empty.locator(".image-card")).toHaveCount(0);
+  await page.locator("#edit-toggle").click(); await expect(end).not.toBeVisible();
+});
+
+test("selected HTML exports include only chosen sections, deduplicate originals and stay independent", async ({ page, browser }, testInfo) => {
+  await ready(page); const bytes = await png(page); await upload(page, ["shared.png", "excluded.png"], bytes);
+  const original = await snapshot(page), [shared, excluded] = original.state.tabs[0].sections[0].items;
+  original.state.tabs[0].sections[0].items = [shared];
+  original.state.tabs[0].sections.push({ id: "shared-again", name: "Shared again", collapsed: true, items: [{ ...shared, id: "shared-copy" }] });
+  original.state.tabs.push({ id: "excluded-tab", name: "Excluded tab", sections: [{ id: "excluded-section", name: "Excluded section", collapsed: false, items: [excluded] }] });
+  original.state.tabs.push({ id: "empty-tab", name: "Empty tab", sections: [] });
+  const records = original.assets.map(([id, asset]) => [id, { name: asset.name, width: asset.width, height: asset.height, data: `data:image/png;base64,${Buffer.from(asset.bytes).toString("base64")}` }]);
+  const lines = [{ format: "moodboard-lines", version: 1, state: original.state, assetCount: records.length }, ...records].map(record => JSON.stringify(record)).join("\n");
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator("#backup-file").setInputFiles({ name: "export-fixture.jsonl", mimeType: "application/x-ndjson", buffer: Buffer.from(lines) });
+  await expect(page.locator("#notice")).toContainText("Backup imported");
+  const before = await snapshot(page);
+  const fullPath = testInfo.outputPath("full-board.html"), selectedPath = testInfo.outputPath("selected-board.html");
+  let event = page.waitForEvent("download"); await page.locator("#save-portable").click(); await (await event).saveAs(fullPath);
+  await page.locator("#export-selected").click();
+  await expect(page.locator("#editor-submit")).toBeDisabled();
+  await page.locator("#cancel-editor").click(); await editTab(page); await expect(page.locator("#editor-submit")).toBeEnabled(); await page.locator("#cancel-editor").click();
+  await page.locator("#export-selected").click();
+  const all = page.getByRole("checkbox", { name: "Select all tabs and sections", exact: true });
+  await all.check(); await expect(page.locator("#editor-submit")).toBeEnabled();
+  await all.uncheck(); await expect(page.locator("#editor-submit")).toBeDisabled();
+  const master = page.getByRole("checkbox", { name: "Select all sections in My inspiration", exact: true });
+  await master.check(); await page.locator(".export-tab > summary").first().click({ position: { x: 5, y: 15 } });
+  await page.getByRole("checkbox", { name: "Export section Shared again in My inspiration", exact: true }).uncheck();
+  await expect(master).toHaveJSProperty("indeterminate", true);
+  await master.check(); await expect(master).toBeChecked();
+  await page.getByRole("checkbox", { name: "Include tab Empty tab", exact: true }).check();
+  await expect(page.locator(".export-summary")).toHaveText("2 tabs · 2 sections · 1 original image");
+  event = page.waitForEvent("download"); await page.locator("#editor-submit").click();
+  const download = await event; expect(download.suggestedFilename()).toContain("moodboard-selection-"); await download.saveAs(selectedPath);
+  await expect(page.locator("#editor")).not.toBeVisible();
+  expect(await snapshot(page)).toEqual(before);
+  const payload = portablePayload(fs.readFileSync(selectedPath, "utf8"));
+  expect(payload.state.id).not.toBe(before.state.id); expect(payload.state.revision).toBe(0);
+  expect(payload.state.tabs.map(tab => tab.name)).toEqual(["My inspiration", "Empty tab"]);
+  expect(payload.state.tabs[0].sections.map(section => section.name)).toEqual(["The little things", "Shared again"]);
+  expect(payload.assets).toHaveLength(1); expect(payload.assets[0][0]).toBe(shared.assetId);
+  expect(Buffer.from(payload.assets[0][1].data.split(",")[1], "base64").equals(bytes)).toBe(true);
+  const offline = await browser.newContext({ offline: true });
+  try {
+    const full = await offline.newPage(); await full.goto(pathToFileURL(fullPath).href);
+    await expect(full.locator(".tab")).toHaveCount(3);
+    const selected = await offline.newPage(); await selected.goto(pathToFileURL(selectedPath).href);
+    await expect(selected.locator(".tab")).toHaveCount(2);
+    await expect(selected.locator(".section")).toHaveCount(2);
+    expect((await snapshot(selected)).assets).toHaveLength(1);
+    expect((await snapshot(selected)).state.id).toBe(payload.state.id);
+  } finally { await offline.close(); }
+});
+
+test("exporting only part of a memory-only board does not mark unexported edits safe to discard", async ({ browser }) => {
+  const context = await browser.newContext();
+  try {
+    await context.addInitScript(() => { Object.defineProperty(window, "indexedDB", { value: { open() { throw new Error("Storage disabled"); } } }); });
+    const page = await context.newPage(); await page.goto("http://127.0.0.1:8085/");
+    await expect(page.locator("#save-status")).toHaveText("Export to keep changes");
+    await page.locator("#image-files").setInputFiles([file("memory.png", await png(page))]);
+    await expect(page.locator(".image-card")).toHaveCount(1);
+    await page.locator("#export-selected").click();
+    await page.getByRole("checkbox", { name: "Select all sections in My inspiration", exact: true }).check();
+    const event = page.waitForEvent("download"); await page.locator("#editor-submit").click(); await event;
+    await expect(page.locator("#editor")).not.toBeVisible();
+    expect(await page.evaluate(() => !dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+  } finally { await context.close(); }
+});
+
+test("selected export failures keep the chooser open and never download a partial board", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
+  const context = await browser.newContext({ serviceWorkers: "block" });
+  try {
+    shared.corruptOriginal(); await shared.connect(context);
+    const reader = await context.newPage(); await reader.goto("http://127.0.0.1:8085/");
+    await expect(reader.locator("#notice")).toContainText("integrity check");
+    const before = (await snapshot(reader)).state;
+    await reader.locator("#export-selected").click();
+    await reader.getByRole("checkbox", { name: "Select all tabs and sections", exact: true }).check();
+    let downloads = 0; reader.on("download", () => downloads++);
+    await reader.locator("#editor-submit").click();
+    await expect(reader.locator("#editor-error")).toContainText("integrity check");
+    await expect(reader.locator("#editor")).toBeVisible();
+    expect(downloads).toBe(0); expect((await snapshot(reader)).state).toEqual(before);
+  } finally { await context.close(); await shared.close(); }
+});
+
 test("competing edits to the same notes still protect both versions with a real conflict", async ({ page, browser }) => {
   const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
   try {
@@ -2003,8 +2363,10 @@ test("exports above 512 MiB open offline and streaming JSON Lines restores every
     const db = await new Promise(resolve => { const r = indexedDB.open("moodboard-portable", 1); r.onsuccess = () => resolve(r.result); });
     const read = (s, k) => new Promise(resolve => { const r = db.transaction(s).objectStore(s).get(k); r.onsuccess = () => resolve(r.result); });
     const id = await read("meta", "active"), board = await read("boards", id), original = board.assets[0][1];
+    if (original.storageKey) original.blob = (await read("boards", original.storageKey)).blob;
     const blob = new Blob([original.blob, new Uint8Array(17 * 1024 * 1024)], { type: "image/png" });
     const item = board.state.tabs[0].sections[0].items[0];
+    delete original.storageKey;
     board.assets = Array.from({ length: 24 }, (_, index) => [`asset-${index}`, { ...original, blob, name: `large-${index}.png` }]);
     board.state.tabs[0].sections[0].items = board.assets.map(([assetId], index) => ({ ...item, id: `item-${index}`, assetId }));
     board.state.revision++;
@@ -2018,9 +2380,13 @@ test("exports above 512 MiB open offline and streaming JSON Lines restores every
   const hashes = async reader => reader.evaluate(async () => {
     const db = await new Promise(resolve => { const r = indexedDB.open("moodboard-portable", 1); r.onsuccess = () => resolve(r.result); });
     const get = (s, k) => new Promise(resolve => { const r = db.transaction(s).objectStore(s).get(k); r.onsuccess = () => resolve(r.result); });
-    const board = await get("boards", await get("meta", "active")); db.close();
+    const board = await get("boards", await get("meta", "active"));
     const result = [];
-    for (const [, asset] of [board.assets[0], board.assets.at(-1)]) result.push([...new Uint8Array(await crypto.subtle.digest("SHA-256", await asset.blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join(""));
+    for (const [, asset] of [board.assets[0], board.assets.at(-1)]) {
+      const blob = asset.storageKey ? (await get("boards", asset.storageKey)).blob : asset.blob;
+      result.push([...new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join(""));
+    }
+    db.close();
     return { count: board.assets.length, hashes: result };
   });
   try {

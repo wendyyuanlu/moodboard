@@ -8,12 +8,12 @@
   const viewer = $("#viewer");
   const deleteWarning = $("#delete-warning");
   let deleteSkipsRemaining = 0, deleting = false;
-  let state, db, assets = new Map(), urls = new Map();
+  let state, db, openingDB, assets = new Map(), urls = new Map();
   let editable = true, selection = new Set(), sectionSelection = new Set(), cursor = null, editorAction, editorDelete, editorSuccess;
   let queue = Promise.resolve(), pending = 0, memoryOnly = false, dirty = false, exporting = false;
   let noticeTimer, viewItems = [], viewIndex = 0, internalClipboard = [];
   let suppressClickUntil = 0, gesture = null, dragFrame = 0, selectedTarget = null;
-  let masonryFrame = 0;
+  let masonryFrame = 0, sectionOrdering;
   const masonryObserver = new ResizeObserver(() => scheduleMasonry());
   let channel;
   const { supportedImage, sourcePageURL, validCrop, validate } = MoodboardFormat;
@@ -26,7 +26,10 @@
   let cloudReady = false, cloudSaving = false, cloudConflict = false, cloudError = "", cloudTimer, lastCloudRead = 0;
   let shellReady = false, cachingOriginals = false, originalCacheError = "";
   const originalDownloads = new Map();
-  let originalDecoder = Promise.resolve();
+  let originalDecoder = Promise.resolve(), originalReadbackFailed = false;
+  const cacheStorageReserve = 64 * 1024 * 1024;
+  let cacheSpaceRequired = 0;
+  const globeIcon = '<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>';
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -77,7 +80,7 @@
     const link = el("a", className);
     link.href = sourceUrl; link.target = "_blank"; link.rel = "noopener noreferrer";
     link.setAttribute("aria-label", `Open source page for ${item.title}`); link.title = "Open source page";
-    link.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 13 4-4M8 16l-1 1a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0M16 8l1-1a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0"/></svg>';
+    setIcon(link, globeIcon);
     return link;
   }
   function clipboardSourcePage(html) {
@@ -113,39 +116,123 @@
         request.result.createObjectStore("boards");
         request.result.createObjectStore("meta");
       };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(new Error("Browser storage is unavailable."));
+      request.onsuccess = () => {
+        const connection = request.result;
+        const disconnected = () => { if (db === connection) db = null; };
+        connection.onclose = disconnected;
+        connection.onversionchange = () => { disconnected(); connection.close(); };
+        resolve(connection);
+      };
+      request.onerror = () => reject(request.error);
       request.onblocked = () => warning("Close other moodboard windows so local storage can open.");
     });
   }
+  async function storageDB() {
+    if (db) return db;
+    if (!openingDB) openingDB = openDB().then(connection => { db = connection; return connection; }).finally(() => { openingDB = null; });
+    return openingDB;
+  }
+  async function storageTransaction(stores, mode, action) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const connection = await storageDB();
+      try {
+        return await new Promise((resolve, reject) => {
+          const tx = connection.transaction(stores, mode);
+          let result, failure;
+          const fail = error => { if (!failure) { failure = error; tx.abort(); } };
+          tx.oncomplete = () => resolve(result);
+          tx.onabort = () => reject(failure || tx.error || new DOMException("The storage transaction was aborted.", "AbortError"));
+          tx.onerror = () => { /* The abort handler preserves the underlying storage error. */ };
+          try { action(tx, value => { result = value; }, fail); }
+          catch (error) { fail(error); }
+        });
+      } catch (error) {
+        if (attempt === 0 && ["InvalidStateError", "AbortError"].includes(error.name)) {
+          if (db === connection) db = null;
+          connection.close();
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
   function readDB(store, key) {
-    return new Promise((resolve, reject) => {
-      const request = db.transaction(store).objectStore(store).get(key);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(new Error("Could not read your saved moodboard. Export before clearing browser storage."));
+    return storageTransaction(store, "readonly", (tx, result, fail) => {
+      const records = tx.objectStore(store), request = records.get(key);
+      request.onsuccess = () => {
+        const record = request.result;
+        result(record);
+        if (store !== "boards" || !record?.assets) return;
+        for (const [, asset] of record.assets) {
+          if (!asset.storageKey) continue;
+          const original = records.get(asset.storageKey);
+          original.onsuccess = () => {
+            if (!(original.result?.blob instanceof Blob)) { fail(new Error("A saved original image is missing. Reconnect and restore from GitHub or a backup.")); return; }
+            asset.blob = original.result.blob;
+          };
+        }
+      };
     });
   }
-  function persist(next, nextAssets, expectedRevision, syncMeta) {
-    if (!db || memoryOnly) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(["boards", "meta"], "readwrite");
-      const store = tx.objectStore("boards");
-      const request = store.get(next.id);
-      let conflict = false;
-      request.onsuccess = () => {
-        if (request.result && request.result.state.revision !== expectedRevision) {
-          conflict = true; tx.abort(); return;
-        }
-        store.put({ state: next, assets: [...nextAssets] }, next.id);
-        tx.objectStore("meta").put(next.id, "active");
-        if (syncMeta) tx.objectStore("meta").put(syncMeta, `cloud:${next.id}`);
-      };
-      tx.oncomplete = resolve;
-      tx.onabort = () => reject(new Error(conflict
-        ? "This collection changed in another window. Reload before editing to avoid overwriting it."
-        : "Could not save: browser storage may be full. Nothing from this action was changed. Export a portable copy of your saved board, or free space and try again."));
-      tx.onerror = () => { /* onabort reports the transaction failure. */ };
-    });
+  const originalStorageKey = (boardId, assetId) => ["original", boardId, assetId];
+  const storedOriginal = (asset, boardId, assetId) => Array.isArray(asset.storageKey) &&
+    asset.storageKey.length === 3 && asset.storageKey[0] === "original" && asset.storageKey[1] === boardId && asset.storageKey[2] === assetId;
+  async function persist(next, nextAssets, expectedRevision, syncMeta, activate = true) {
+    if (memoryOnly) return;
+    const added = [];
+    try {
+      await storageTransaction(["boards", "meta"], "readwrite", (tx, result, fail) => {
+        const store = tx.objectStore("boards");
+        const request = store.get(next.id);
+        request.onsuccess = () => {
+          try {
+            if (request.result && request.result.state.revision !== expectedRevision) {
+              fail(new Error("This collection changed in another window. Reload before editing to avoid overwriting it.")); return;
+            }
+            added.length = 0;
+            const records = [...nextAssets].map(([id, asset]) => {
+              const record = { ...asset }; delete record.blob; delete record.storageKey;
+              if (asset.blob instanceof Blob) {
+                record.storageKey = originalStorageKey(next.id, id);
+                if (!storedOriginal(asset, next.id, id)) {
+                  store.put({ blob: asset.blob }, record.storageKey);
+                  added.push(id);
+                }
+              }
+              return [id, record];
+            });
+            for (const [id, asset] of request.result?.assets || []) {
+              if (storedOriginal(asset, next.id, id) && !(nextAssets.get(id)?.blob instanceof Blob)) store.delete(asset.storageKey);
+            }
+            store.put({ state: next, assets: records }, next.id);
+            if (activate) tx.objectStore("meta").put(next.id, "active");
+            if (syncMeta) tx.objectStore("meta").put(syncMeta, `cloud:${next.id}`);
+          } catch (error) { fail(error); }
+        };
+      });
+    } catch (error) {
+      if (error.message.includes("another window")) throw error;
+      throw new DOMException(`Could not save (${error.name}): ${errorMessage(error)} Nothing from this action was changed. Free space or export a portable copy and try again.`, error.name);
+    }
+    // Release newly downloaded Blob backing after IndexedDB has durably saved it.
+    if (added.length) {
+      for (const id of added) nextAssets.set(id, { ...nextAssets.get(id), storageKey: originalStorageKey(next.id, id) });
+      try {
+        await storageTransaction("boards", "readonly", (tx, result, fail) => {
+          for (const id of added) {
+            const storageKey = originalStorageKey(next.id, id), request = tx.objectStore("boards").get(storageKey);
+            request.onsuccess = () => {
+              if (!(request.result?.blob instanceof Blob)) { fail(new Error("A newly saved original image is missing.")); return; }
+              nextAssets.set(id, { ...nextAssets.get(id), blob: request.result.blob, storageKey });
+            };
+          }
+        });
+      } catch (error) {
+        warning(`Your changes were saved, but cached originals could not be reopened: ${errorMessage(error)} Reload before caching more images.`);
+        originalCacheError = errorMessage(error);
+        originalReadbackFailed = true;
+      }
+    }
   }
   function setSaveStatus() {
     let status = memoryOnly ? "Export to keep changes" : "Saved on this device";
@@ -157,6 +244,7 @@
     }
     syncText($("#save-status"), pending ? "Saving…" : status);
     $("#save-portable").disabled = exporting || pending > 0 || !state || Boolean(cloudEnabled && !cloudReady && !cloudInfo.revision && !allItems().length);
+    $("#export-selected").disabled = $("#save-portable").disabled;
     updateGitHubControls();
   }
   function syncText(node, text) {
@@ -198,10 +286,10 @@
       link.title = navigator.onLine ? "" : unavailable;
     }
   }
-  function enqueue(action) {
+  function enqueue(action, reportFailure = true) {
     pending++; setSaveStatus();
     const result = queue.then(action);
-    queue = result.catch(report).finally(() => { pending--; setSaveStatus(); });
+    queue = result.catch(error => { if (reportFailure) report(error); }).finally(() => { pending--; setSaveStatus(); });
     return result;
   }
   async function commit(change, additions = new Map()) {
@@ -325,8 +413,7 @@
     document.documentElement.style.setProperty("--tile-size", `${state.settings.zoom}px`);
     $("#zoom").value = state.settings.zoom;
     document.documentElement.style.setProperty("--card-gap", `${cardGap()}px`);
-    $("#decrease-spacing").disabled = cardGap() === 0;
-    $("#increase-spacing").disabled = cardGap() === 40;
+    $("#spacing").value = cardGap();
     $("#card-spacing").title = `Card spacing: ${cardGap()}px`;
     $("#edit-toggle").setAttribute("aria-label", editable ? "Turn editing off" : "Turn editing on");
     $("#edit-toggle").title = editable ? "Editing on — click to turn off" : "Editing off — click to turn on";
@@ -337,7 +424,10 @@
     }
     renderTabs();
     masonryObserver.disconnect();
+    sectionOrdering?.destroy();
     $("#sections").replaceChildren(...current.sections.map(renderSection));
+    if (editable) sectionOrdering = sectionOrderHandles();
+    $("#collapse-sections").disabled = !current.sections.some(section => !section.collapsed);
     renderCursor(); renderSelection(); setSaveStatus(); updateOfflineStatus();
     masonryObserver.observe($("#sections"));
     for (const card of $$(".image-card")) masonryObserver.observe(card);
@@ -389,6 +479,9 @@
     const title = el("strong", "", section.name); title.title = section.name;
     toggle.append(chevron, title);
     const actions = el("div", "section-actions edit-control");
+    const drag = button("", () => {}, "icon-button section-drag");
+    drag.setAttribute("aria-label", `Drag section ${section.name}`); drag.title = `Drag section ${section.name}`;
+    setIcon(drag, '<path d="M8 5h.01M16 5h.01M8 12h.01M16 12h.01M8 19h.01M16 19h.01"/>');
     const add = button("", () => { setCursor(section.id); $("#image-files").click(); }, "icon-button section-upload");
     add.setAttribute("aria-label", `Add images to ${section.name}`); add.title = `Add images to ${section.name}`;
     add.append($("#add-images svg").cloneNode(true));
@@ -403,7 +496,7 @@
       renderSelection();
     });
     const checkArea = el("label", "section-selection"); checkArea.append(check);
-    actions.append(checkArea, add, edit);
+    actions.append(checkArea, drag, add, edit);
     header.append(toggle, el("small", "section-count", String(section.items.length)), actions); node.append(header);
     const body = el("div", "section-body");
     body.hidden = section.collapsed;
@@ -415,7 +508,10 @@
       const empty = el("div", "empty-section edit-control");
       empty.append(end);
       body.append(empty);
-    } else body.append(end);
+    } else {
+      end.classList.add("insert-slot", "section-end-slim"); end.firstElementChild.textContent = "+ Paste here";
+      body.append(end);
+    }
     node.append(body);
     return node;
   }
@@ -529,6 +625,8 @@
     $("#editor-title").hidden = false;
     $("#editor-delete").hidden = !remove;
     $("#editor-submit").hidden = !save;
+    $("#editor-submit").textContent = "Save";
+    $("#editor-submit").disabled = false;
     $("#cancel-editor").textContent = save ? "Cancel" : "Done";
     if (!editor.open) editor.showModal();
   }
@@ -538,6 +636,7 @@
   function positionField(position, maximum) {
     const input = field("Position", "position", String(position), "number");
     input.min = 1; input.max = maximum; input.step = 1; input.required = true;
+    return input;
   }
   function reorder(array, item, position) {
     const index = array.findIndex((entry) => entry.id === item.id);
@@ -552,24 +651,24 @@
   function duplicateSection(section) {
     return { ...clone(section), id: uid(), items: section.items.map((item) => ({ ...clone(item), id: uid() })) };
   }
-  function openTabOrder() {
-    const list = el("div", "tab-order-list");
-    list.setAttribute("role", "list"); list.setAttribute("aria-label", "Tab order");
-    openEditor("Reorder tabs", async () => {
-      const ids = [...list.children].map(row => row.dataset.tabId);
-      await enqueue(() => commit(next => {
-        if (next.tabs.length !== ids.length || next.tabs.some(tab => !ids.includes(tab.id))) throw new Error("The tabs changed while this dialog was open. Cancel and reopen it before saving.");
-        const tabs = new Map(next.tabs.map(tab => [tab.id, tab]));
-        next.tabs = ids.map(id => tabs.get(id));
-      }));
-    });
-    hint("Drag a handle to rearrange tabs. On a keyboard, focus a handle and use Up/Down or Home/End. Save applies the order; Cancel keeps the original order.");
-    const status = el("p", "hint"); status.setAttribute("role", "status");
+  function applyOrder(entries, ids) {
+    if (entries.length !== ids.length || new Set(ids).size !== ids.length || entries.some(entry => !ids.includes(entry.id))) {
+      throw new Error("The collection changed while rearranging. Reopen it before saving.");
+    }
+    const byId = new Map(entries.map(entry => [entry.id, entry]));
+    entries.splice(0, entries.length, ...ids.map(id => byId.get(id)));
+  }
+  function sortable(list, handleSelector, onChange, page = false) {
+    const owner = page ? document : editor;
     let drag = null, frame = 0;
+    const rows = () => [...list.children];
+    const ids = () => rows().map(row => row.dataset.orderId || row.dataset.sectionId);
     const update = () => {
-      [...list.children].forEach((row, index) => {
-        row.setAttribute("aria-posinset", String(index + 1)); row.setAttribute("aria-setsize", String(list.children.length));
-        $(".tab-order-handle", row).setAttribute("aria-label", `Move ${$(".tab-order-name", row).textContent}, position ${index + 1} of ${list.children.length}`);
+      rows().forEach((row, index) => {
+        if (!page) {
+          row.setAttribute("aria-posinset", String(index + 1)); row.setAttribute("aria-setsize", String(list.children.length));
+          $(handleSelector, row).setAttribute("aria-label", `Move ${$(".tab-order-name", row).textContent}, position ${index + 1} of ${list.children.length}`);
+        }
       });
     };
     const finish = cancel => {
@@ -577,57 +676,116 @@
       const current = drag; drag = null; cancelAnimationFrame(frame);
       if (cancel) for (const row of current.order) list.append(row);
       current.row.classList.remove("reordering");
+      if (page) {
+        const top = current.row.getBoundingClientRect().top;
+        document.body.classList.remove("section-sorting");
+        if (cancel) scrollTo(0, current.scrollY);
+        else scrollBy(0, current.row.getBoundingClientRect().top - top);
+      }
       if (list.hasPointerCapture(current.pointerId)) list.releasePointerCapture(current.pointerId);
-      update(); status.textContent = cancel ? "Drag cancelled." : "Tab moved. Save to apply.";
+      update();
+      if (!cancel && rows().some((row, index) => row !== current.order[index])) onChange(ids(), current.row.dataset.orderId || current.row.dataset.sectionId);
     };
-    for (const tab of state.tabs) {
-      const row = el("div", "tab-order-row"), handle = button("", () => {}, "icon-button tab-order-handle");
-      row.dataset.tabId = tab.id; row.setAttribute("role", "listitem");
-      setIcon(handle, '<path d="M8 5h.01M16 5h.01M8 12h.01M16 12h.01M8 19h.01M16 19h.01"/>');
-      const name = el("span", "tab-order-name", tab.name); name.title = tab.name;
-      row.append(handle, name); list.append(row);
+    for (const row of rows()) {
+      const handle = $(handleSelector, row);
       handle.addEventListener("keydown", event => {
         if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
-        const rows = [...list.children], index = rows.indexOf(row);
-        const destination = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1
-          : Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)));
-        rows.splice(index, 1); rows.splice(destination, 0, row);
-        for (const entry of rows) list.append(entry);
-        update(); handle.focus(); status.textContent = `Moved ${tab.name} to position ${destination + 1}. Save to apply.`;
+        const order = rows(), index = order.indexOf(row);
+        const destination = event.key === "Home" ? 0 : event.key === "End" ? order.length - 1
+          : Math.max(0, Math.min(order.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)));
+        if (destination === index) return;
+        order.splice(index, 1); order.splice(destination, 0, row);
+        for (const entry of order) list.append(entry);
+        update(); handle.focus(); onChange(ids(), row.dataset.orderId || row.dataset.sectionId);
       });
       handle.addEventListener("pointerdown", event => {
-        if (event.button !== 0 || drag) return;
+        if (event.button !== 0 || drag || pending) return;
         event.preventDefault(); handle.focus();
-        drag = { row, pointerId: event.pointerId, y: event.clientY, order: [...list.children] };
+        drag = { row, pointerId: event.pointerId, y: event.clientY, order: rows(), scrollY };
         row.classList.add("reordering"); list.setPointerCapture(event.pointerId);
+        if (page) {
+          document.body.classList.add("section-sorting");
+          scrollBy(0, row.getBoundingClientRect().top - event.clientY);
+        }
         const scroll = () => {
           if (!drag) return;
-          const bounds = list.getBoundingClientRect();
-          if (drag.y < bounds.top + 36) list.scrollTop -= 8;
-          else if (drag.y > bounds.bottom - 36) list.scrollTop += 8;
-          const target = [...list.children].find(entry => entry !== row && drag.y < entry.getBoundingClientRect().top + entry.getBoundingClientRect().height / 2);
+          const bounds = page ? { top: 0, bottom: innerHeight } : list.getBoundingClientRect();
+          const delta = drag.y < bounds.top + (page ? 160 : 36) ? -8 : drag.y > bounds.bottom - 36 ? 8 : 0;
+          if (page) scrollBy(0, delta); else list.scrollTop += delta;
+          const target = rows().find(entry => entry !== row && drag.y < entry.getBoundingClientRect().top + entry.getBoundingClientRect().height / 2);
           list.insertBefore(row, target || null);
           frame = requestAnimationFrame(scroll);
         };
         frame = requestAnimationFrame(scroll);
       });
     }
-    list.addEventListener("pointermove", event => { if (drag?.pointerId === event.pointerId) { event.preventDefault(); drag.y = event.clientY; } });
-    list.addEventListener("pointerup", event => { if (drag?.pointerId === event.pointerId) finish(false); });
-    list.addEventListener("pointercancel", () => finish(true));
-    list.addEventListener("lostpointercapture", () => finish(true));
-    const cancelDrag = event => { if (drag && event.key === "Escape") { event.preventDefault(); finish(true); } };
-    editor.addEventListener("keydown", cancelDrag);
-    editor.addEventListener("close", () => { finish(true); editor.removeEventListener("keydown", cancelDrag); }, { once: true });
-    update(); $("#editor-fields").append(list, status);
+    const move = event => { if (drag?.pointerId === event.pointerId) { event.preventDefault(); drag.y = event.clientY; } };
+    const drop = event => { if (drag?.pointerId === event.pointerId) finish(false); };
+    const cancel = () => finish(true);
+    const cancelDrag = event => { if (drag && event.key === "Escape") { event.preventDefault(); event.stopPropagation(); finish(true); } };
+    list.addEventListener("pointermove", move); list.addEventListener("pointerup", drop);
+    list.addEventListener("pointercancel", cancel); list.addEventListener("lostpointercapture", cancel);
+    owner.addEventListener("keydown", cancelDrag, true);
+    const destroy = () => {
+      finish(true); list.removeEventListener("pointermove", move); list.removeEventListener("pointerup", drop);
+      list.removeEventListener("pointercancel", cancel); list.removeEventListener("lostpointercapture", cancel);
+      owner.removeEventListener("keydown", cancelDrag, true); owner.removeEventListener("close", destroy);
+    };
+    if (!page) owner.addEventListener("close", destroy, { once: true });
+    update(); return { ids, update, destroy };
+  }
+  function orderList(entries, currentId, label, onChange = () => {}) {
+    const list = el("div", "tab-order-list");
+    list.setAttribute("role", "list"); list.setAttribute("aria-label", label);
+    for (const entry of entries) {
+      const row = el("div", "tab-order-row"), handle = button("", () => {}, "icon-button tab-order-handle");
+      row.dataset.orderId = row.dataset.tabId = entry.id; row.setAttribute("role", "listitem");
+      setIcon(handle, '<path d="M8 5h.01M16 5h.01M8 12h.01M16 12h.01M8 19h.01M16 19h.01"/>');
+      const name = el(entry.id === currentId ? "strong" : "span", "tab-order-name", entry.name); name.title = entry.name;
+      row.append(handle, name); list.append(row);
+    }
+    return { list, ...sortable(list, ".tab-order-handle", onChange) };
+  }
+  function rearrangeField(entries, currentId, position, label) {
+    const details = el("details", "rearrange-control"); details.append(el("summary", "", "Rearrange"));
+    const order = orderList(entries, currentId, label, ids => { position.value = ids.indexOf(currentId) + 1; });
+    details.append(order.list); $("#editor-fields").append(details);
+    const reposition = () => {
+      const rows = [...order.list.children], current = rows.find(row => row.dataset.orderId === currentId);
+      const others = [...order.list.children].filter(row => row !== current);
+      order.list.insertBefore(current, others[Math.max(0, Math.min(others.length, Number(position.value) - 1))] || null);
+      order.update();
+    };
+    position.addEventListener("input", reposition);
+    return { ...order, details, destroy() { position.removeEventListener("input", reposition); order.destroy(); } };
+  }
+  function sectionOrderHandles() {
+    const tabId = state.activeTab;
+    return sortable($("#sections"), ".section-drag", (ids, movedId) => {
+      enqueue(() => commit(next => { applyOrder(next.tabs.find(tab => tab.id === tabId).sections, ids); }))
+        .then(() => {
+          const row = [...$("#sections").children].find(section => section.dataset.sectionId === movedId);
+          $(".section-drag", row)?.focus({ preventScroll: true });
+        }).catch(() => { render(); });
+    }, true);
+  }
+  function openTabOrder() {
+    let order;
+    openEditor("Reorder tabs", () => enqueue(() => commit(next => applyOrder(next.tabs, order.ids()))));
+    order = orderList(state.tabs, state.activeTab, "Tab order");
+    $("#editor-fields").append(order.list);
   }
   function openTab(tab) {
+    const id = tab?.id || uid();
+    let tabOrder;
     openEditor(tab ? "Your tab, your way" : "A new space for inspiration", async (form) => {
       const name = requireName(form);
       await enqueue(() => commit((next) => {
-        const item = tab ? next.tabs.find((entry) => entry.id === tab.id) : { id: uid(), sections: [] };
-        item.name = name; reorder(next.tabs, item, form.get("position")); next.activeTab = item.id;
+        const item = tab ? next.tabs.find((entry) => entry.id === id) : { id, sections: [] };
+        item.name = name;
+        if (!tab) next.tabs.push(item);
+        applyOrder(next.tabs, tabOrder.ids()); reorder(next.tabs, item, form.get("position")); next.activeTab = item.id;
       }));
       cursor = null; selection.clear(); sectionSelection.clear(); render();
     }, tab ? async () => {
@@ -639,8 +797,12 @@
       }));
     } : null);
     const name = nameField("Tab name", tab?.name || ""); name.focus(); name.select();
-    positionField(tab ? state.tabs.findIndex((entry) => entry.id === tab.id) + 1 : state.tabs.length + 1, state.tabs.length + (tab ? 0 : 1));
-    hint("Change Position to move this tab. Duplicates include every section and image, with independent organization.");
+    const position = positionField(tab ? state.tabs.findIndex((entry) => entry.id === id) + 1 : state.tabs.length + 1, state.tabs.length + (tab ? 0 : 1));
+    tabOrder = rearrangeField(tab ? state.tabs : [...state.tabs, { id, name: "New tab" }], id, position, "Tab order");
+    name.addEventListener("input", () => {
+      const row = [...tabOrder.list.children].find(row => row.dataset.orderId === id);
+      $(".tab-order-name", row).textContent = name.value || "New tab"; tabOrder.update();
+    });
     if (tab) $("#editor-extra").append(button("Duplicate tab", async () => {
       try {
         await enqueue(() => commit((next) => {
@@ -656,25 +818,40 @@
   function openSection(section) {
     const tabId = state.activeTab;
     const current = activeTab();
+    const id = section?.id || uid();
+    let sectionOrder;
     openEditor(section ? "A collection of your own" : "A new collection", async (form) => {
       const name = requireName(form);
       await enqueue(() => commit((next) => {
-        const item = section ? findSection(section.id, next) : { id: uid(), items: [], collapsed: false };
+        const item = section ? findSection(section.id, next) : { id, items: [], collapsed: false };
         if (section) for (const tab of next.tabs) tab.sections = tab.sections.filter((entry) => entry.id !== item.id);
         item.name = name;
         const target = next.tabs.find((tab) => tab.id === form.get("tab")).sections;
+        target.push(item); applyOrder(target, sectionOrder.ids());
         reorder(target, item, form.get("position"));
         next.activeTab = form.get("tab");
       }));
     }, section ? () => removeItems([section.id], true) : null);
-    nameField("Section name", section?.name || "");
+    const name = nameField("Section name", section?.name || "");
     const tabSelect = field("Tab", "tab", tabId, "text", state.tabs.map((tab) => [tab.id, tab.name]));
-    positionField(section ? current.sections.findIndex((entry) => entry.id === section.id) + 1 : current.sections.length + 1, current.sections.length + (section ? 0 : 1));
+    const position = positionField(section ? current.sections.findIndex((entry) => entry.id === id) + 1 : current.sections.length + 1, current.sections.length + (section ? 0 : 1));
+    const rearrange = () => {
+      if (sectionOrder) { sectionOrder.destroy(); sectionOrder.details.remove(); }
+      const entries = [...state.tabs.find(tab => tab.id === tabSelect.value).sections.filter(entry => entry.id !== id)];
+      const moving = { id, name: name.value || "New section" };
+      entries.splice(Math.max(0, Math.min(entries.length, Number(position.value) - 1)), 0, moving);
+      sectionOrder = rearrangeField(entries, id, position, "Section order");
+    };
+    rearrange();
     tabSelect.addEventListener("change", () => {
       const max = state.tabs.find((tab) => tab.id === tabSelect.value).sections.filter((entry) => entry.id !== section?.id).length + 1;
       $("[name=position]", editor).max = $("[name=position]", editor).value = max;
+      rearrange();
     });
-    hint("Position changes the section order. You can also move this entire collection to another tab.");
+    name.addEventListener("input", () => {
+      const row = [...sectionOrder.list.children].find(row => row.dataset.orderId === id);
+      $(".tab-order-name", row).textContent = name.value || "New section"; sectionOrder.update();
+    });
     if (section) $("#editor-extra").append(button("Duplicate section", async () => {
       try {
         await enqueue(() => commit((next) => {
@@ -1013,8 +1190,7 @@
     viewItems = tabItems().map((item) => item.id);
     viewIndex = Math.max(0, viewItems.indexOf(itemId));
     $("#viewer-stage").classList.remove("actual");
-    $("#viewer-zoom").setAttribute("aria-pressed", "false");
-    $("#viewer-zoom").textContent = "Actual size";
+    updateViewerZoom(false);
     showViewer();
     viewer.showModal();
   }
@@ -1038,6 +1214,30 @@
     $("#viewer-prev").disabled = viewIndex === 0;
     $("#viewer-next").disabled = viewIndex === viewItems.length - 1;
     $("#viewer-stage").scrollTo(0, 0);
+    const locations = $("#viewer-locations-list"), currentSection = sections().find(section => section.items.some(entry => entry.id === item.id));
+    locations.replaceChildren(); $("#viewer-locations").open = false;
+    for (const tab of state.tabs) for (const section of tab.sections) {
+      if (section.id === currentSection?.id || !section.items.some(entry => entry.assetId === item.assetId ||
+        asset.remote?.sha && assets.get(entry.assetId)?.remote?.sha === asset.remote.sha)) continue;
+      const link = button(`${tab.name} / ${section.name}`, () => {
+        viewer.close();
+        enqueue(() => commit(next => {
+          next.activeTab = tab.id; findSection(section.id, next).collapsed = false;
+        })).then(() => {
+          const target = [...$("#sections").children].find(node => node.dataset.sectionId === section.id);
+          target?.scrollIntoView({ block: "start" });
+        }).catch(() => {});
+      }, "viewer-location");
+      locations.append(link);
+    }
+    $("#viewer-locations").hidden = !locations.children.length;
+    $("#viewer-locations-summary").textContent = `Other sections (${locations.children.length})`;
+  }
+  function updateViewerZoom(actual) {
+    const label = actual ? "Fit image" : "Actual size", control = $("#viewer-zoom");
+    control.setAttribute("aria-pressed", String(actual)); control.setAttribute("aria-label", label); control.title = label;
+    setIcon(control, actual ? '<path d="M3 8h5V3m8 0v5h5M3 16h5v5m8 0v-5h5"/>'
+      : '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5"/>');
   }
   function stepViewer(step) {
     viewIndex = Math.max(0, Math.min(viewItems.length - 1, viewIndex + step)); showViewer();
@@ -1056,6 +1256,7 @@
   $("#viewer-prev").addEventListener("click", () => stepViewer(-1));
   $("#viewer-next").addEventListener("click", () => stepViewer(1));
   $("#viewer-close").addEventListener("click", () => viewer.close());
+  setIcon($("#viewer-source"), globeIcon);
   $("#viewer-download").addEventListener("click", async event => {
     event.preventDefault();
     const item = allItems().find(item => item.id === viewItems[viewIndex]);
@@ -1066,8 +1267,7 @@
   });
   $("#viewer-zoom").addEventListener("click", () => {
     const actual = $("#viewer-stage").classList.toggle("actual");
-    $("#viewer-zoom").setAttribute("aria-pressed", String(actual));
-    $("#viewer-zoom").textContent = actual ? "Fit image" : "Actual size";
+    updateViewerZoom(actual);
   });
 
   function dropLocation(x, y) {
@@ -1245,12 +1445,13 @@
     });
   }
   function updateOfflineStatus() {
-    if (!shellReady) return;
     const cached = [...assets.values()].filter(asset => asset.blob instanceof Blob).length;
-    if (cached === assets.size) originalCacheError = "";
-    $("#connection-status").textContent = originalCacheError ? "Originals not fully cached · reconnect and Force re-sync"
-      : cached < assets.size ? `Caching originals ${cached}/${assets.size} · stay online`
-        : memoryOnly ? "Offline shell only · export to keep originals" : "Offline ready";
+    if (cached === assets.size) { originalCacheError = ""; cacheSpaceRequired = 0; }
+    if (!shellReady && !cacheSpaceRequired && !originalCacheError) return;
+    $("#connection-status").textContent = cacheSpaceRequired ? "Original caching paused · free device storage · online browsing available"
+      : originalCacheError ? "Originals not fully cached · reconnect and Force re-sync"
+      : memoryOnly ? "Offline shell only · export to keep originals"
+        : cached < assets.size ? `Caching originals ${cached}/${assets.size} · stay online` : "Offline ready";
   }
   async function ensureOriginal(id, asset) {
     if (asset.blob instanceof Blob) return asset;
@@ -1269,7 +1470,7 @@
     return originalDownloads.get(key);
   }
   async function cacheOriginals() {
-    if (cachingOriginals || !navigator.onLine) { updateOfflineStatus(); return; }
+    if (cachingOriginals || memoryOnly || originalReadbackFailed || !navigator.onLine) { updateOfflineStatus(); return; }
     const originals = [...assets].filter(([, asset]) => !(asset.blob instanceof Blob));
     if (!originals.length) { updateOfflineStatus(); return; }
     cachingOriginals = true; originalCacheError = ""; updateOfflineStatus();
@@ -1277,23 +1478,36 @@
     const completed = [];
     const flush = async () => {
       const batch = completed.splice(0);
-      if (!batch.length) return;
+      if (!batch.length || failure) return;
       await enqueue(async () => {
         const nextAssets = new Map(assets);
+        let bytes = 0;
         for (const [id, asset] of batch) {
-          if (nextAssets.get(id)?.remote?.sha === asset.remote.sha) nextAssets.set(id, asset);
+          if (nextAssets.get(id)?.remote?.sha === asset.remote.sha && !(nextAssets.get(id).blob instanceof Blob)) {
+            nextAssets.set(id, asset); bytes += asset.blob.size;
+          }
+        }
+        const space = await navigator.storage?.estimate?.();
+        if (space && space.quota - space.usage < bytes + cacheStorageReserve) {
+          cacheSpaceRequired = bytes + cacheStorageReserve;
+          throw new DOMException("Not enough browser storage remains to cache more originals safely.", "QuotaExceededError");
         }
         await persist(state, nextAssets, state.revision, cloudEnabled ? cloudInfo : undefined);
         assets = nextAssets; updateOfflineStatus();
-      });
+      }, false);
     };
     try {
+      if (cacheSpaceRequired) {
+        const space = await navigator.storage?.estimate?.();
+        if (space && space.quota - space.usage < cacheSpaceRequired) return;
+        cacheSpaceRequired = 0;
+      }
       await Promise.all(Array.from({ length: Math.min(4, originals.length) }, async () => {
-        while (index < originals.length && !failure) {
+        while (index < originals.length && !failure && !originalReadbackFailed) {
           const [id, asset] = originals[index++];
           try {
             completed.push([id, await ensureOriginal(id, asset)]);
-            if (completed.length >= 16) await flush();
+            if (completed.length >= 16 || completed.reduce((bytes, [, original]) => bytes + original.blob.size, 0) >= 8 * 1024 * 1024) await flush();
           } catch (error) { failure ||= error; }
         }
       }));
@@ -1301,18 +1515,53 @@
       if (failure) throw failure;
     } catch (error) {
       originalCacheError = errorMessage(error);
-      report(new Error(`Original image caching failed: ${originalCacheError} Browsing stays available online; do not go offline until Offline ready appears.`));
+      if (error.name === "QuotaExceededError") {
+        cacheSpaceRequired ||= cacheStorageReserve;
+        warning("Original caching paused because browser storage is low. Online browsing and edits to already saved content remain available. Free device storage, then use Force re-sync. This board is not fully available offline.");
+        console.warn("Original caching paused:", error);
+      } else report(new Error(`Original image caching failed: ${originalCacheError} Browsing stays available online; do not go offline until Offline ready appears.`));
     } finally {
       cachingOriginals = false; updateOfflineStatus();
-      if (!originalCacheError && [...assets.values()].some(asset => !(asset.blob instanceof Blob))) cacheOriginals();
+      if (!originalCacheError && !cacheSpaceRequired && !originalReadbackFailed && [...assets.values()].some(asset => !(asset.blob instanceof Blob))) cacheOriginals();
     }
+  }
+  function originalStaging(originals) {
+    const id = uid();
+    let flushed = 0, saved = false, pendingBytes = 0;
+    return {
+      async flush(force = false, bytes = 0) {
+        pendingBytes += bytes;
+        if (memoryOnly || originals.size === flushed || !force && originals.size - flushed < 16 && pendingBytes < 8 * 1024 * 1024) return;
+        await persist({ id, revision: 0 }, originals, saved ? 0 : -1, undefined, false);
+        saved = true; flushed = originals.size; pendingBytes = 0;
+        if (originalReadbackFailed) throw new Error("Could not reopen staged originals. Reload before importing again; the active board has not been replaced.");
+      },
+      async cleanup() {
+        if (memoryOnly) return;
+        try {
+          await storageTransaction("boards", "readwrite", tx => {
+            const store = tx.objectStore("boards");
+            store.delete(id);
+            for (const key of originals.keys()) store.delete(originalStorageKey(id, key));
+          });
+        } catch (error) {
+          report(new Error(`Could not remove temporary import data: ${errorMessage(error)} Your existing board has not been replaced by temporary data.`));
+        }
+      }
+    };
   }
   async function unpackBoard(data, shared = false) {
     if (!data || data.format !== "moodboard" || data.version !== 1 || !Array.isArray(data.assets)) throw new Error("Choose a valid moodboard JSON backup.");
-    const result = new Map();
-    for (const entry of data.assets) await unpackAsset(entry, result, shared);
-    validate(data.state, result);
-    return { state: data.state, assets: result };
+    const result = new Map(), staging = shared ? null : originalStaging(result);
+    try {
+      for (const entry of data.assets) {
+        const bytes = await unpackAsset(entry, result, shared);
+        await staging?.flush(false, bytes);
+      }
+      validate(data.state, result);
+      await staging?.flush(true);
+      return { state: data.state, assets: result, cleanup: staging?.cleanup };
+    } catch (error) { await staging?.cleanup(); throw error; }
   }
   async function unpackAsset(entry, result, shared = false) {
     if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || result.has(entry[0])) throw new Error("The backup contains invalid or duplicate image records.");
@@ -1326,11 +1575,13 @@
     const blob = new Blob([bytes], { type: mime });
     const decoded = await readImage(blob);
     result.set(key, { ...decoded, name: asset.name });
+    return blob.size;
   }
   async function readBackup(file) {
     const prefix = await file.slice(0, 100).text();
     if (!prefix.startsWith('{"format":"moodboard-lines",')) return unpackBoard(JSON.parse(await file.text()));
     const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader(), originals = new Map();
+    const staging = originalStaging(originals);
     let header = null, parts = [];
     const line = async value => {
       if (!value.trim()) return;
@@ -1338,7 +1589,7 @@
       if (!header) {
         if (record.format !== "moodboard-lines" || record.version !== 1 || !Number.isSafeInteger(record.assetCount) || record.assetCount < 0) throw new Error("Choose a valid moodboard JSON Lines backup.");
         header = record;
-      } else await unpackAsset(record, originals);
+      } else { const bytes = await unpackAsset(record, originals); await staging.flush(false, bytes); }
     };
     try {
       while (true) {
@@ -1353,11 +1604,27 @@
       if (parts.length) await line(parts.join(""));
       if (!header || header.assetCount !== originals.size) throw new Error("The backup is incomplete. Your current board has not been replaced.");
       validate(header.state, originals);
-      return { state: header.state, assets: originals };
+      await staging.flush(true);
+      return { state: header.state, assets: originals, cleanup: staging.cleanup };
+    } catch (error) {
+      await staging.cleanup(); throw error;
     } finally { await reader.cancel(); reader.releaseLock(); }
   }
-  function exportSnapshot() {
+  function exportSnapshot(selected) {
     const snapshot = { state: clone(state), assets: new Map(assets) };
+    if (selected) {
+      for (const [tabId, sectionIds] of selected) {
+        const tab = snapshot.state.tabs.find(tab => tab.id === tabId);
+        if (!tab || [...sectionIds].some(id => !tab.sections.some(section => section.id === id))) throw new Error("Selected content changed. Reopen Export and select it again.");
+      }
+      snapshot.state.tabs = snapshot.state.tabs.filter(tab => selected.has(tab.id));
+      for (const tab of snapshot.state.tabs) tab.sections = tab.sections.filter(section => selected.get(tab.id).has(section.id));
+      if (!snapshot.state.tabs.length) throw new Error("Select at least one tab or section to export.");
+      snapshot.state.id = uid(); snapshot.state.revision = 0;
+      if (!snapshot.state.tabs.some(tab => tab.id === snapshot.state.activeTab)) snapshot.state.activeTab = snapshot.state.tabs[0].id;
+      const referenced = new Set(allItems(snapshot.state).map(item => item.assetId));
+      for (const id of snapshot.assets.keys()) if (!referenced.has(id)) snapshot.assets.delete(id);
+    }
     validate(snapshot.state, snapshot.assets);
     return snapshot;
   }
@@ -1372,12 +1639,9 @@
     clearTimeout(cloudTimer); cloudTimer = setTimeout(syncCloud, delay);
   }
   async function saveCloudMeta() {
-    if (!db || memoryOnly) return;
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction("meta", "readwrite");
+    if (memoryOnly) return;
+    await storageTransaction("meta", "readwrite", tx => {
       tx.objectStore("meta").put(clone(cloudInfo), `cloud:${state.id}`);
-      tx.oncomplete = resolve;
-      tx.onabort = tx.onerror = () => reject(new Error("Could not save the GitHub outbox status. Export a backup before closing."));
     });
   }
   async function cloudRequest(method = "GET", body, conditional = false) {
@@ -1410,7 +1674,7 @@
       next.activeTab = next.tabs.find(tab => tab.sections.some(section => section.items.length))?.id || next.activeTab;
     }
     validate(next, nextAssets);
-    const existing = db ? await readDB("boards", next.id) : null;
+    const existing = !memoryOnly ? await readDB("boards", next.id) : null;
     const info = { collection: cloudConfig.collection, revision: record.revision, baseState: clone(imported.state), dirty: merge, lastSyncedAt: merge ? cloudInfo.lastSyncedAt ?? null : Date.now() };
     await persist(next, nextAssets, next.id === state.id ? state.revision : existing?.state.revision ?? -1, info);
     for (const url of urls.values()) URL.revokeObjectURL(url);
@@ -1422,7 +1686,7 @@
   }
   async function syncCloud() {
     if (!cloudEnabled || !state || cloudSaving || cloudConflict) return;
-    if (editor.open || viewer.open || deleteWarning.open || gesture) { scheduleCloud(1500); return; }
+    if (editor.open || viewer.open || deleteWarning.open || gesture || document.body.classList.contains("section-sorting")) { scheduleCloud(1500); return; }
     if (!navigator.onLine) { cloudError = "Offline. Changes are queued on this device."; setSaveStatus(); return; }
     cloudSaving = true; setSaveStatus();
     let retryWrite = false;
@@ -1433,7 +1697,7 @@
         const record = await cloudRequest("GET", undefined, Boolean(cloudInfo.revision));
         let deferred = false;
         await enqueue(async () => {
-          if (editor.open || viewer.open || deleteWarning.open || gesture) { deferred = true; return; }
+          if (editor.open || viewer.open || deleteWarning.open || gesture || document.body.classList.contains("section-sorting")) { deferred = true; return; }
           if (record) {
             if (record.board === null && record.revision === null) {
               cloudInfo.revision = null; cloudInfo.dirty = true; await saveCloudMeta();
@@ -1532,15 +1796,75 @@
     link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
-  async function exportPortable() {
+  function openExport() {
+    const groups = [];
+    const selected = () => new Map(groups.filter(group => group.master.checked || group.master.indeterminate)
+      .map(group => [group.id, new Set(group.sections.filter(section => section.input.checked).map(section => section.id))]));
+    openEditor("Export tabs and sections", () => exportPortable(selected(), true));
+    editorSuccess = "Selected content exported as a separate HTML file. Your full board is unchanged.";
+    $("#editor-submit").textContent = "Export HTML";
+    const container = el("div", "export-choices"), summary = el("p", "export-summary");
+    summary.setAttribute("role", "status");
+    const choice = (name, label) => {
+      const node = el("label", "export-choice"), input = el("input"); input.type = "checkbox";
+      input.setAttribute("aria-label", label);
+      const text = el("span", "", name); text.title = name;
+      node.append(input, text); return { node, input };
+    };
+    const all = choice("Select all tabs and sections", "Select all tabs and sections");
+    const update = () => {
+      for (const group of groups) if (group.sections.length) {
+        const count = group.sections.filter(section => section.input.checked).length;
+        group.master.checked = count === group.sections.length;
+        group.master.indeterminate = count > 0 && count < group.sections.length;
+      }
+      const selection = selected(), ids = new Set();
+      let count = 0;
+      for (const tab of state.tabs) for (const section of tab.sections) if (selection.get(tab.id)?.has(section.id)) {
+        count++; for (const item of section.items) ids.add(item.assetId);
+      }
+      all.input.checked = groups.length > 0 && groups.every(group => group.master.checked);
+      all.input.indeterminate = selection.size > 0 && !all.input.checked;
+      summary.textContent = `${selection.size} tabs · ${count} sections · ${ids.size} original ${ids.size === 1 ? "image" : "images"}`;
+      $("#editor-submit").disabled = selection.size === 0;
+    };
+    for (const tab of state.tabs) {
+      const details = el("details", "export-tab"), heading = el("summary"), sectionList = el("div", "export-section-list");
+      const master = choice(tab.name, tab.sections.length ? `Select all sections in ${tab.name}` : `Include tab ${tab.name}`);
+      master.node.addEventListener("click", event => event.stopPropagation());
+      heading.append(master.node, el("small", "", `${tab.sections.length} sections`)); details.append(heading, sectionList);
+      const group = { id: tab.id, master: master.input, sections: [] }; groups.push(group);
+      for (const section of tab.sections) {
+        const check = choice(`${section.name} (${section.items.length})`, `Export section ${section.name} in ${tab.name}`);
+        group.sections.push({ id: section.id, input: check.input });
+        check.input.addEventListener("change", update); sectionList.append(check.node);
+      }
+      master.input.addEventListener("change", () => {
+        for (const section of group.sections) section.input.checked = master.input.checked;
+        update();
+      });
+      container.append(details);
+    }
+    all.input.addEventListener("change", () => {
+      for (const group of groups) {
+        group.master.checked = all.input.checked;
+        for (const section of group.sections) section.input.checked = all.input.checked;
+      }
+      update();
+    });
+    $("#editor-fields").append(all.node, container, summary);
+    hint("Only selected sections and their full original images are included. The exported file is an independent board; it does not replace this one.");
+    update();
+  }
+  async function exportPortable(selected, throwErrors = false) {
     if (!state) return;
     if (exporting) { notify("An export is already being prepared. Wait for its download before starting another."); return; }
-    exporting = true;
+    exporting = true; setSaveStatus();
     const control = $("#save-portable");
     control.disabled = true; control.textContent = "Preparing copy…";
     try {
       await queue;
-      const snapshot = exportSnapshot();
+      const snapshot = exportSnapshot(selected);
       const html = document.documentElement.cloneNode(true);
       const find = (selector) => html.querySelector(selector);
       for (const manifest of html.querySelectorAll("link[rel=manifest]")) manifest.remove();
@@ -1557,6 +1881,7 @@
       find("#viewer-image").removeAttribute("src");
       find("#viewer-original").removeAttribute("href"); find("#viewer-download").removeAttribute("href");
       find("#viewer-source").removeAttribute("href"); find("#viewer-source").hidden = true;
+      find("#viewer-locations-list").replaceChildren(); find("#viewer-locations").hidden = true; find("#viewer-locations").removeAttribute("open");
       find("#save-portable").removeAttribute("disabled"); find("#save-portable").textContent = "↓ Save portable copy";
       find("#save-status").textContent = "Opening your space…";
       html.querySelector("body").classList.remove("edit-off", "dragging");
@@ -1569,10 +1894,10 @@
         control.textContent = `Preparing ${++count}/${snapshot.assets.size}…`;
       }
       parts.push(new Blob([template.slice(boundary + marker.length)]));
-      download(new Blob(parts, { type: "text/html;charset=utf-8" }), `moodboard-${new Date().toISOString().slice(0, 10)}.html`);
-      dirty = false;
-      notify("Portable HTML saved with all original images. Copy it to your USB. Save a new copy after making more changes.");
-    } catch (error) { report(error); }
+      download(new Blob(parts, { type: "text/html;charset=utf-8" }), `moodboard-${selected ? "selection-" : ""}${new Date().toISOString().slice(0, 10)}.html`);
+      if (!selected) dirty = false;
+      notify(selected ? "Selected content exported. Your full board is unchanged." : "Portable HTML saved with all original images. Copy it to your USB. Save a new copy after making more changes.");
+    } catch (error) { if (throwErrors) throw error; report(error); }
     finally { exporting = false; control.textContent = "↓ Save portable copy"; setSaveStatus(); }
   }
   async function exportJSON() {
@@ -1603,7 +1928,7 @@
       ["Captions", "Below Manage in Settings and backups are Caption switches for the entire caption, filenames, and URLs. Save to apply. Missing URLs have no placeholder text. Images with a source page also have a link icon on their hover controls and in their details menu, even if captions are hidden."],
       ["Organize", "Grid and List always show selection checkboxes while editing. On desktop, quickly drag from an image, checkbox, or empty space to select a rectangle; hold Ctrl/Command/Shift to add to the selection. All selects the current tab; the section icon expands selection to every represented section. Hold an image to rearrange it instead; on phones use its dotted grip. Move provides an accessible alternative."],
       ["Crop without losing originals", "Use an image's crop icon. The editor always shows the full original: draw a crop, move its frame, or resize its corners. Keyboard users can focus the frame: arrows move it and Shift+arrows resize in one-percent steps. Reset crop, Cancel, and Save share the bottom bar. Crops only affect the board, never original downloads or the full-image viewer, and are included in backups and portable copies."],
-      ["Tabs & sections", "Use the reorder button after the tab plus to drag tabs into order, then Save. Its handles also support Up/Down and Home/End. Double-click a tab to rename, reposition, duplicate, or delete it. You can also focus it and press F2, or touch and hold it on a phone. Editing must be on. Long section titles truncate visually; full names stay available in their tooltips and editors. Use a section’s dots menu to organize that section."],
+      ["Tabs & sections", "Use the reorder button after the tab plus to drag tabs into order, then Save. Tab and section details have a collapsed Rearrange control below Position, with the edited entry bold. Drag a section's dotted header grip to reorder sections directly; Escape cancels. Handles support Up/Down and Home/End. The collapse-all icon collapses the current tab. Double-click a tab, press F2, or touch and hold it to edit. Long section titles truncate visually; full names stay available in tooltips and editors."],
       ["Save to computer or USB", "Save portable copy downloads a single HTML file containing the app, every original image, and your organization. Open it on a computer without internet. It is a snapshot: after editing, save a NEW portable copy. The app cannot silently rewrite files on your USB."],
       ["On your phone", "For reliable phone use, open the hosted HTTPS site while online, then use your browser’s Add to Home Screen / Install option and import a JSON backup. Open it once to finish caching before going offline. Mobile Files apps may only preview local HTML rather than run it; portable HTML is not a guaranteed phone installation method."],
       ["GitHub autosave", "The published board is publicly viewable. To upload changes, use Settings and backups → Enable auto-sync with a fine-grained token restricted to the moodboard repository and Contents: Read and write. The token lives only in this open tab and is sent only to GitHub; enable it again after a reload. Changes upload automatically, including removal of an original file when its last placement is deleted. Earlier copies remain in Git history. Conflicts keep your local changes until you resolve them in Settings."],
@@ -1749,8 +2074,9 @@
   $("#backup-file").addEventListener("change", async (event) => {
     const file = event.target.files[0]; event.target.value = "";
     if (!file) return;
+    let imported;
     try {
-      const imported = await readBackup(file);
+      imported = await readBackup(file);
       if (!confirm(`Replace this open collection with the backup? ${cloudEnabled ? "This will also replace the public GitHub board. " : ""}Export your current board first if you want to keep a copy.`)) return;
       await enqueue(async () => {
         const next = clone(imported.state); next.id = uid(); next.revision = 0;
@@ -1763,6 +2089,7 @@
       });
       editor.close(); notify("Backup imported. All images are available offline.");
     } catch (error) { report(new Error(`Import failed: ${errorMessage(error)}`, { cause: error })); }
+    finally { await imported?.cleanup?.(); }
   });
   $("#editor-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1785,11 +2112,15 @@
   addEventListener("online", updateGitHubControls);
   addEventListener("offline", updateGitHubControls);
   $("#cancel-editor").addEventListener("click", () => editor.close());
-  $("#save-portable").addEventListener("click", exportPortable);
+  $("#save-portable").addEventListener("click", () => exportPortable());
+  $("#export-selected").addEventListener("click", openExport);
   $("#more").addEventListener("click", () => { if (state) settings(); });
   $("#help").addEventListener("click", guide);
   $("#new-tab").addEventListener("click", () => openTab());
   $("#reorder-tabs").addEventListener("click", openTabOrder);
+  $("#collapse-sections").addEventListener("click", () => mutate(next => {
+    for (const section of activeTab(next).sections) section.collapsed = true;
+  }));
   $("#new-section").addEventListener("click", () => openSection());
   $("#bottom-add").addEventListener("click", () => openSection());
   $("#add-images").addEventListener("click", () => $("#image-files").click());
@@ -1808,11 +2139,15 @@
   $("#zoom").addEventListener("change", (event) => {
     const zoom = Number(event.target.value); mutate((next) => { next.settings.zoom = zoom; });
   });
-  for (const [id, delta] of [["decrease-spacing", -2], ["increase-spacing", 2]]) {
-    $(`#${id}`).addEventListener("click", () => mutate((next) => {
-      next.settings.spacing = Math.min(40, Math.max(0, cardGap(next) + delta));
-    }));
-  }
+  $("#spacing").addEventListener("input", event => event.target.setCustomValidity(""));
+  $("#spacing").addEventListener("change", event => {
+    const input = event.target, spacing = input.valueAsNumber;
+    if (!Number.isInteger(spacing) || spacing < 0 || spacing > 40) {
+      input.setCustomValidity("Enter a whole pixel value from 0 to 40."); input.reportValidity(); return;
+    }
+    if (spacing !== cardGap()) mutate(next => { next.settings.spacing = spacing; });
+  });
+  $("#spacing").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); event.target.blur(); } });
   const boardHeader = $("#board-header"), appHeader = $(".app-header");
   let headerScrollY = scrollY;
   const revealHeader = () => { boardHeader.classList.remove("shy-hidden"); appHeader.classList.remove("shy-hidden"); headerScrollY = Math.max(0, scrollY); };
@@ -1820,7 +2155,7 @@
   appHeader.addEventListener("focusin", revealHeader);
   document.addEventListener("scroll", () => {
     const y = Math.max(0, scrollY), delta = y - headerScrollY;
-    if (y === 0 || boardHeader.getBoundingClientRect().top > 50 || editor.open || viewer.open || gesture || boardHeader.querySelector(":focus-visible") || appHeader.querySelector(":focus-visible")) {
+    if (y === 0 || boardHeader.getBoundingClientRect().top > 50 || editor.open || viewer.open || gesture || document.body.classList.contains("section-sorting") || boardHeader.querySelector(":focus-visible") || appHeader.querySelector(":focus-visible")) {
       revealHeader(); return;
     }
     if (Math.abs(delta) < 8) return;
@@ -1885,28 +2220,32 @@
   }
   async function initialize() {
     $("#save-portable").disabled = true;
+    let cleanupEmbedded;
     try {
+      try { await storageDB(); }
+      catch (error) {
+        memoryOnly = true; console.error(error);
+        warning("Local autosave is unavailable in this browser/file location. You can still work, but MUST Save portable copy before closing.");
+      }
       let embedded = null;
       const payload = JSON.parse($("#portable-data").textContent);
       if (payload) {
         const chunks = $$("script[data-portable-asset]");
         if (payload.embeddedAssetCount !== undefined) {
           if (payload.embeddedAssetCount !== chunks.length) throw new Error("The portable copy is incomplete. Your saved board has not been replaced.");
-          const originals = new Map();
+          const originals = new Map(), staging = originalStaging(originals);
+          cleanupEmbedded = staging.cleanup;
           for (const chunk of chunks) {
-            const entry = JSON.parse(chunk.textContent); chunk.textContent = ""; chunk.remove(); await unpackAsset(entry, originals);
+            const entry = JSON.parse(chunk.textContent); chunk.textContent = ""; chunk.remove();
+            const bytes = await unpackAsset(entry, originals); await staging.flush(false, bytes);
           }
+          await staging.flush(true);
           validate(payload.state, originals); embedded = { state: payload.state, assets: originals };
-        } else embedded = await unpackBoard(payload);
+        } else { embedded = await unpackBoard(payload); cleanupEmbedded = embedded.cleanup; }
         $("#portable-data").textContent = "null";
       }
-      try { db = await openDB(); }
-      catch (error) {
-        memoryOnly = true; console.error(error);
-        warning("Local autosave is unavailable in this browser/file location. You can still work, but MUST Save portable copy before closing.");
-      }
       let saved = null;
-      if (db) {
+      if (!memoryOnly) {
         const savedId = embedded?.state.id || await readDB("meta", "active");
         if (savedId) saved = await readDB("boards", savedId);
       }
@@ -1925,7 +2264,7 @@
           if (event.data.id === state.id && event.data.revision > state.revision) warning("This collection was updated in another window. Export a backup if needed, then reload before editing.");
         };
       }
-      if (cloudEnabled && db) {
+      if (cloudEnabled && !memoryOnly) {
         const stored = await readDB("meta", `cloud:${state.id}`);
         if (stored?.collection === cloudConfig.collection) cloudInfo = stored;
       }
@@ -1942,7 +2281,7 @@
       warning(`Could not open this moodboard: ${errorMessage(error)}. Your stored board was not overwritten.`);
       for (const control of $$("button,input", document.querySelector("main"))) control.disabled = true;
       $("#save-status").textContent = "Could not open storage";
-    }
+    } finally { await cleanupEmbedded?.(); }
   }
   initialize();
 })();

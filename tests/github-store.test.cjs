@@ -147,8 +147,10 @@ test("metadata-first reads show all sections without fetching originals and reus
   const asset = record.board.assets[0][1], blob = await reader.readOriginal(asset.remote);
   assert.deepEqual(Buffer.from(await blob.arrayBuffer()), png);
   const calls = remote.calls.length;
-  const cached = await reader.readCached(undefined, new Map([["asset", { ...asset, blob }]]));
+  const storageKey = ["original", data.state.id, "asset"];
+  const cached = await reader.readCached(undefined, new Map([["asset", { ...asset, blob, storageKey }]]));
   assert.equal(cached.board.assets[0][1].blob, blob);
+  assert.deepEqual(cached.board.assets[0][1].storageKey, storageKey);
   assert.equal(remote.calls.slice(calls).filter(call => call.path.startsWith("/raw/images/")).length, 0);
   const corrupt = structuredClone(asset.remote); corrupt.sha = "a".repeat(40);
   await assert.rejects(reader.readOriginal(corrupt), /integrity check/);

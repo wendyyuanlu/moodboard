@@ -127,7 +127,7 @@ const MoodboardGitHub = (() => {
           const cached = cachedAssets.get(id);
           const reusable = cached?.blob instanceof Blob && (cached.remote?.sha === asset.sha || await gitHash(new Uint8Array(await cached.blob.arrayBuffer())) === asset.sha);
           entries.push([id, { name: asset.name, width: asset.width, height: asset.height,
-            ...(reusable ? { blob: cached.blob } : {}), remote: { url: `${raw(record.head)}/${asset.path}`, sha: asset.sha, mime: asset.mime } }]);
+            ...(reusable ? { blob: cached.blob, ...(cached.storageKey ? { storageKey: cached.storageKey } : {}) } : {}), remote: { url: `${raw(record.head)}/${asset.path}`, sha: asset.sha, mime: asset.mime } }]);
         }
         format.validate(record.manifest.state, new Map(entries));
         return { revision: record.revision, board: { format: "moodboard", version: 1, state: record.manifest.state, assets: entries } };
