@@ -193,7 +193,7 @@ body.hide-add-images #add-images,body.hide-add-images .section-upload{display:no
 <div class="dialog-heading"><h2 id="editor-title"></h2><button id="close-editor" class="icon-button" type="button" aria-label="Close dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div id="editor-fields"></div><p id="editor-error" class="error" role="alert" hidden></p><div id="editor-extra" class="dialog-extra"></div><div class="dialog-footer"><button id="editor-delete" class="text-button danger" type="button" hidden>Delete</button><span></span><button id="cancel-editor" class="button" type="button">Cancel</button><button id="editor-submit" class="button primary" type="submit">Save</button></div></form></dialog>
 <dialog id="viewer" aria-label="Image viewer"><div class="viewer-header"><div><strong id="viewer-title"></strong><small id="viewer-details"></small></div><a id="viewer-source" class="viewer-button" target="_blank" rel="noopener noreferrer" hidden>Source page ↗</a><button id="viewer-zoom" class="viewer-button" aria-pressed="false">Actual size</button><a id="viewer-original" class="viewer-button" target="_blank" rel="noopener">Open original ↗</a><a id="viewer-download" class="viewer-button" download aria-label="Download original"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg></a><button id="viewer-close" class="viewer-button" aria-label="Close image viewer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div id="viewer-stage"><img id="viewer-image" alt=""></div><div class="viewer-footer"><button id="viewer-prev" class="viewer-button" aria-label="Previous image"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12H4m7-7-7 7 7 7"/></svg></button><span id="viewer-position"></span><button id="viewer-next" class="viewer-button" aria-label="Next image"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16m-7-7 7 7-7 7"/></svg></button></div></dialog>
 <dialog id="delete-warning" aria-labelledby="delete-warning-title"><form id="delete-warning-form"><h2 id="delete-warning-title">Delete images?</h2><p id="delete-warning-message"></p><label class="delete-skip-label" for="delete-skip">Do not show for the next <input id="delete-skip" type="number" min="0" max="9007199254740991" step="1" value="0" required aria-label="Delete clicks without a warning"> delete clicks</label><div class="delete-warning-actions"><button id="delete-warning-cancel" class="button" type="button" autofocus>Cancel</button><button id="delete-warning-submit" class="button primary" type="submit">Delete</button></div></form></dialog>
-<input id="image-files" type="file" accept="image/*" multiple hidden><input id="backup-file" type="file" accept=".json,application/json" hidden>
+<input id="image-files" type="file" accept="image/*" multiple hidden><input id="backup-file" type="file" accept=".json,.jsonl,application/json,application/x-ndjson" hidden>
 <script id="portable-data" type="application/json">null</script>
 <script id="cloud-config" type="application/json">{"site":"https://wendyyuanlu.github.io/moodboard/","owner":"wendyyuanlu","repo":"moodboard","branch":"board","collection":"wendyyuanlu/moodboard:board"}</script>
 <script>const MoodboardFormat = (() => {
@@ -353,6 +353,19 @@ const MoodboardGitHub = (() => {
     if (mime === "image/bmp") return text.startsWith("BM");
     return [0, 0, 1, 0].every((value, index) => head[index] === value);
   }
+  async function originalRecord(asset, bytes, mime) {
+    if (!imageSignature(bytes, mime)) throw new SaveError(400, "Image bytes do not match the declared format.");
+    if (bytes.length > 100 * 1024 * 1024) throw new SaveError(413, "GitHub does not accept image files larger than 100 MiB. Your local original is unchanged.");
+    const filename = String(asset.name).replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "image";
+    return { name: asset.name, width: asset.width, height: asset.height, mime, path: `images/${await hash("SHA-256", bytes)}-${filename}`, sha: await gitHash(bytes) };
+  }
+  async function preparedManifest(state, records, files) {
+    const referenced = new Set(state.tabs.flatMap(tab => tab.sections.flatMap(section => section.items.map(item => item.assetId))));
+    if (referenced.size !== records.length) throw new SaveError(400, "Remove unreferenced images before uploading.");
+    const manifest = { format: "moodboard-github", version: 1, state, assets: records };
+    const bytes = encoder.encode(JSON.stringify(manifest));
+    return { manifest, bytes, revision: await gitHash(bytes), files };
+  }
   async function prepareBoard(board) {
     if (!board || board.format !== "moodboard" || board.version !== 1 || !Array.isArray(board.assets)) throw new SaveError(400, "Invalid moodboard package.");
     const assets = new Map(), files = new Map(), records = [];
@@ -363,20 +376,14 @@ const MoodboardGitHub = (() => {
       const match = /^data:(image\/[^;,]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(asset.data);
       if (!match || !format.supportedImage.test(match[1])) throw new SaveError(400, "Use supported raster images only.");
       const mime = match[1].toLowerCase(), bytes = bytesFromBase64(match[2]);
-      if (base64(bytes) !== match[2] || !imageSignature(bytes, mime)) throw new SaveError(400, "Image bytes do not match the declared format.");
-      if (bytes.length > 100 * 1024 * 1024) throw new SaveError(413, "GitHub does not accept image files larger than 100 MiB. Your local original is unchanged.");
+      if (base64(bytes) !== match[2]) throw new SaveError(400, "Image bytes do not match the declared format.");
       assets.set(id, { ...asset, blob: new Blob([bytes], { type: mime }) });
-      const filename = String(asset.name).replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "image";
-      const path = `images/${await hash("SHA-256", bytes)}-${filename}`, sha = await gitHash(bytes);
-      files.set(path, { bytes, sha });
-      records.push([id, { name: asset.name, width: asset.width, height: asset.height, mime, path, sha }]);
+      const record = await originalRecord(asset, bytes, mime);
+      files.set(record.path, { bytes, sha: record.sha });
+      records.push([id, record]);
     }
     try { format.validate(board.state, assets); } catch (error) { throw new SaveError(400, error.message); }
-    const referenced = new Set(board.state.tabs.flatMap((tab) => tab.sections.flatMap((section) => section.items.map((item) => item.assetId))));
-    if (referenced.size !== assets.size) throw new SaveError(400, "Remove unreferenced images before uploading.");
-    const manifest = { format: "moodboard-github", version: 1, state: board.state, assets: records };
-    const bytes = encoder.encode(JSON.stringify(manifest));
-    return { manifest, bytes, revision: await gitHash(bytes), files };
+    return preparedManifest(board.state, records, files);
   }
   function createGitHubStore({ owner, repo, branch = "board" }, { fetchImpl = fetch, initialToken = "" } = {}) {
     if (![owner, repo, branch].every((value) => /^[a-zA-Z0-9._-]+$/.test(value))) throw new Error("Invalid GitHub repository configuration.");
@@ -465,15 +472,34 @@ const MoodboardGitHub = (() => {
       await prepareBoard(board);
       return { revision: record.revision, board };
     }
-    async function write(expectedRevision, board) {
+    async function prepareCachedBoard(state, assets) {
+      format.validate(state, assets);
+      const records = [], files = new Map();
+      for (const [id, asset] of assets) {
+        let record;
+        if (format.validRemote(asset.remote) && asset.remote.url.startsWith(raw(""))) {
+          record = { name: asset.name, width: asset.width, height: asset.height, mime: asset.remote.mime,
+            path: asset.remote.url.split("/").slice(6).join("/"), sha: asset.remote.sha };
+        } else {
+          if (!(asset.blob instanceof Blob)) throw new SaveError(400, "This original must be cached before uploading.");
+          record = await originalRecord(asset, new Uint8Array(await asset.blob.arrayBuffer()), asset.blob.type.toLowerCase());
+        }
+        records.push([id, record]); files.set(record.path, { sha: record.sha, blob: asset.blob, remote: asset.remote });
+      }
+      return preparedManifest(state, records, files);
+    }
+    async function write(expectedRevision, board, cachedAssets) {
       if (!token) throw new SaveError(401, "Enable auto-sync in Settings to upload this device's pending edits.");
-      const prepared = await prepareBoard(board), current = await loadMeta();
-      if (prepared.revision === current.revision) return { revision: current.revision };
+      const prepared = cachedAssets ? await prepareCachedBoard(board.state, cachedAssets) : await prepareBoard(board), current = await loadMeta();
+      const saved = (revision, commit) => ({ revision, originals: prepared.manifest.assets.map(([id, asset]) =>
+        [id, { url: `${raw(commit)}/${asset.path}`, sha: asset.sha, mime: asset.mime }]) });
+      if (prepared.revision === current.revision) return saved(current.revision, current.head);
       if (expectedRevision !== current.revision) throw new SaveError(409, "Someone else saved a newer shared board. Your local changes are safe. Resolve the conflict in Settings.");
       const changes = [];
       for (const [path, file] of prepared.files) {
         if (current.paths.get(path) === file.sha) continue;
-        const uploaded = await api("/git/blobs", "POST", { content: base64(file.bytes), encoding: "base64" });
+        const bytes = file.bytes || new Uint8Array(await (file.blob || await readOriginal(file.remote)).arrayBuffer());
+        const uploaded = await api("/git/blobs", "POST", { content: base64(bytes), encoding: "base64" });
         if (uploaded.sha !== file.sha) throw new SaveError(502, "GitHub returned an unexpected image checksum.");
         changes.push({ path, mode: "100644", type: "blob", sha: uploaded.sha });
       }
@@ -482,12 +508,12 @@ const MoodboardGitHub = (() => {
       if (manifest.sha !== prepared.revision) throw new SaveError(502, "GitHub returned an unexpected board checksum.");
       changes.push({ path: "board.json", mode: "100644", type: "blob", sha: manifest.sha });
       const tree = await api("/git/trees", "POST", { ...(current.tree ? { base_tree: current.tree } : {}), tree: changes });
-      const count = board.state.tabs.reduce((sum, tab) => sum + tab.sections.reduce((sum, section) => sum + section.items.length, 0), 0);
+      const count = prepared.manifest.state.tabs.reduce((sum, tab) => sum + tab.sections.reduce((sum, section) => sum + section.items.length, 0), 0);
       const commit = await api("/git/commits", "POST", { message: `Save shared moodboard (${count} images)\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`,
         tree: tree.sha, parents: current.head ? [current.head] : [] });
       if (current.head) await api(`/git/refs/heads/${branch}`, "PATCH", { sha: commit.sha, force: false });
       else await api("/git/refs", "POST", { ref: `refs/heads/${branch}`, sha: commit.sha });
-      return { revision: manifest.sha };
+      return saved(manifest.sha, commit.sha);
     }
     async function readState(revision) {
       if (!/^[a-f0-9]{40}$/.test(revision)) throw new SaveError(400, "Invalid shared board baseline revision.");
@@ -524,7 +550,8 @@ const MoodboardGitHub = (() => {
       readCached: (knownRevision, cachedAssets) => serialize(() => read(knownRevision, cachedAssets)),
       readOriginal,
       readState: (revision) => serialize(() => readState(revision)),
-      write: (expectedRevision, board) => serialize(() => write(expectedRevision, board))
+      write: (expectedRevision, board) => serialize(() => write(expectedRevision, board)),
+      writeCached: (expectedRevision, state, assets) => serialize(() => write(expectedRevision, { state }, assets))
     };
   }
   return Object.freeze({ createGitHubStore, prepareBoard, gitHash, SaveError });
@@ -543,7 +570,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   let deleteSkipsRemaining = 0, deleting = false;
   let state, db, assets = new Map(), urls = new Map();
   let editable = true, selection = new Set(), sectionSelection = new Set(), cursor = null, editorAction, editorDelete, editorSuccess;
-  let queue = Promise.resolve(), pending = 0, memoryOnly = false, dirty = false;
+  let queue = Promise.resolve(), pending = 0, memoryOnly = false, dirty = false, exporting = false;
   let noticeTimer, viewItems = [], viewIndex = 0, internalClipboard = [];
   let suppressClickUntil = 0, gesture = null, dragFrame = 0, selectedTarget = null;
   let masonryFrame = 0;
@@ -688,7 +715,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       if (memoryOnly && cloudInfo.dirty) status = "In memory · export a backup";
     }
     syncText($("#save-status"), pending ? "Saving…" : status);
-    $("#save-portable").disabled = pending > 0 || !state || Boolean(cloudEnabled && !cloudReady && !cloudInfo.revision && !allItems().length);
+    $("#save-portable").disabled = exporting || pending > 0 || !state || Boolean(cloudEnabled && !cloudReady && !cloudInfo.revision && !allItems().length);
     updateGitHubControls();
   }
   function syncText(node, text) {
@@ -870,7 +897,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     renderTabs();
     masonryObserver.disconnect();
     $("#sections").replaceChildren(...current.sections.map(renderSection));
-    renderCursor(); renderSelection(); setSaveStatus();
+    renderCursor(); renderSelection(); setSaveStatus(); updateOfflineStatus();
     masonryObserver.observe($("#sections"));
     for (const card of $$(".image-card")) masonryObserver.observe(card);
     scheduleMasonry();
@@ -1779,6 +1806,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   function updateOfflineStatus() {
     if (!shellReady) return;
     const cached = [...assets.values()].filter(asset => asset.blob instanceof Blob).length;
+    if (cached === assets.size) originalCacheError = "";
     $("#connection-status").textContent = originalCacheError ? "Originals not fully cached · reconnect and Force re-sync"
       : cached < assets.size ? `Caching originals ${cached}/${assets.size} · stay online`
         : memoryOnly ? "Offline shell only · export to keep originals" : "Offline ready";
@@ -1834,34 +1862,65 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       if (!originalCacheError && [...assets.values()].some(asset => !(asset.blob instanceof Blob))) cacheOriginals();
     }
   }
-  async function packageBoard() {
-    const data = { format: "moodboard", version: 1, state: clone(state), assets: [] };
-    const snapshot = new Map(assets);
-    validate(data.state, snapshot);
-    for (const [id, asset] of snapshot) {
-      const original = await ensureOriginal(id, asset);
-      data.assets.push([id, { name: asset.name, width: asset.width, height: asset.height, data: await blobToDataURL(original.blob) }]);
-    }
-    return data;
-  }
   async function unpackBoard(data, shared = false) {
     if (!data || data.format !== "moodboard" || data.version !== 1 || !Array.isArray(data.assets)) throw new Error("Choose a valid moodboard JSON backup.");
     const result = new Map();
-    for (const entry of data.assets) {
-      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || result.has(entry[0])) throw new Error("The backup contains invalid or duplicate image records.");
-      const [key, asset] = entry;
-      if (shared && asset && MoodboardFormat.validRemote(asset.remote)) { result.set(key, asset); continue; }
-      if (!asset || typeof asset.data !== "string" || !/^data:image\/(png|jpeg|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=\r\n]+$/i.test(asset.data)) throw new Error("The backup contains an unsupported image.");
-      const comma = asset.data.indexOf(","), mime = asset.data.slice(5, asset.data.indexOf(";"));
-      const binary = atob(asset.data.slice(comma + 1));
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-      const blob = new Blob([bytes], { type: mime });
-      const decoded = await readImage(blob);
-      result.set(key, { ...decoded, name: asset.name });
-    }
+    for (const entry of data.assets) await unpackAsset(entry, result, shared);
     validate(data.state, result);
     return { state: data.state, assets: result };
+  }
+  async function unpackAsset(entry, result, shared = false) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || result.has(entry[0])) throw new Error("The backup contains invalid or duplicate image records.");
+    const [key, asset] = entry;
+    if (shared && asset && MoodboardFormat.validRemote(asset.remote)) { result.set(key, asset); return; }
+    if (!asset || typeof asset.data !== "string" || !/^data:image\/(png|jpeg|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=\r\n]+$/i.test(asset.data)) throw new Error("The backup contains an unsupported image.");
+    const comma = asset.data.indexOf(","), mime = asset.data.slice(5, asset.data.indexOf(";"));
+    const binary = atob(asset.data.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    const blob = new Blob([bytes], { type: mime });
+    const decoded = await readImage(blob);
+    result.set(key, { ...decoded, name: asset.name });
+  }
+  async function readBackup(file) {
+    const prefix = await file.slice(0, 100).text();
+    if (!prefix.startsWith('{"format":"moodboard-lines",')) return unpackBoard(JSON.parse(await file.text()));
+    const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader(), originals = new Map();
+    let header = null, parts = [];
+    const line = async value => {
+      if (!value.trim()) return;
+      const record = JSON.parse(value);
+      if (!header) {
+        if (record.format !== "moodboard-lines" || record.version !== 1 || !Number.isSafeInteger(record.assetCount) || record.assetCount < 0) throw new Error("Choose a valid moodboard JSON Lines backup.");
+        header = record;
+      } else await unpackAsset(record, originals);
+    };
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        let start = 0, end;
+        while ((end = value.indexOf("\n", start)) !== -1) {
+          parts.push(value.slice(start, end)); await line(parts.join("")); parts = []; start = end + 1;
+        }
+        if (start < value.length) parts.push(value.slice(start));
+      }
+      if (parts.length) await line(parts.join(""));
+      if (!header || header.assetCount !== originals.size) throw new Error("The backup is incomplete. Your current board has not been replaced.");
+      validate(header.state, originals);
+      return { state: header.state, assets: originals };
+    } finally { await reader.cancel(); reader.releaseLock(); }
+  }
+  function exportSnapshot() {
+    const snapshot = { state: clone(state), assets: new Map(assets) };
+    validate(snapshot.state, snapshot.assets);
+    return snapshot;
+  }
+  async function* encodedOriginals(snapshot) {
+    for (const [id, asset] of snapshot.assets) {
+      const original = await ensureOriginal(id, asset);
+      yield JSON.stringify([id, { name: asset.name, width: asset.width, height: asset.height, data: await blobToDataURL(original.blob) }]);
+    }
   }
   function scheduleCloud(delay = 1200) {
     if (!cloudEnabled) return;
@@ -1877,7 +1936,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     });
   }
   async function cloudRequest(method = "GET", body, conditional = false) {
-    const data = method === "GET" ? await github.readCached(conditional ? cloudInfo.revision : undefined, new Map(assets)) : await github.write(body.expectedRevision, body.board);
+    const data = method === "GET" ? await github.readCached(conditional ? cloudInfo.revision : undefined, new Map(assets)) : await github.writeCached(body.expectedRevision, body.board.state, body.board.assets);
     if (data === null) return null;
     if (!(data.revision === null || typeof data.revision === "string" && /^[a-f0-9]{40}$/.test(data.revision))) throw new Error("The save service returned an invalid revision.");
     return data;
@@ -1936,7 +1995,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
             } else if (!record.board || !record.revision) throw new Error("The shared board response is incomplete.");
             else if (!cloudInfo.revision && state.id !== record.board.state.id && allItems().length) {
               await installShared(record, true);
-            } else if (!cloudInfo.revision && allItems().length && JSON.stringify(await packageBoard()) !== JSON.stringify(record.board)) {
+            } else if (!cloudInfo.revision && allItems().length && JSON.stringify(state) !== JSON.stringify(record.board.state)) {
               const error = new Error("This device has an existing local version. Merge it with the shared board in Settings, or export it before loading the shared version.");
               error.conflict = true; throw error;
             } else if (cloudInfo.dirty) {
@@ -1963,14 +2022,16 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       if (cloudInfo.dirty) {
         if (!github.connected) { cloudError = ""; cloudReady = true; return; }
         await queue;
-        const board = await packageBoard(), sentId = board.state.id, sentRevision = board.state.revision;
+        const board = exportSnapshot(), sentId = board.state.id, sentRevision = board.state.revision;
         const saved = await cloudRequest("PUT", { expectedRevision: cloudInfo.revision, board });
         await enqueue(async () => {
           cloudInfo.revision = saved.revision;
           cloudInfo.baseState = clone(board.state);
           cloudInfo.dirty = state.id !== sentId || state.revision !== sentRevision;
           cloudInfo.lastSyncedAt = Date.now();
-          await saveCloudMeta();
+          const nextAssets = new Map(assets);
+          for (const [id, remote] of saved.originals) if (nextAssets.has(id)) nextAssets.set(id, { ...nextAssets.get(id), remote });
+          await persist(state, nextAssets, state.revision, cloudInfo); assets = nextAssets;
         });
       }
       cloudError = ""; cloudReady = true;
@@ -2028,15 +2089,19 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   }
   async function exportPortable() {
     if (!state) return;
+    if (exporting) { notify("An export is already being prepared. Wait for its download before starting another."); return; }
+    exporting = true;
     const control = $("#save-portable");
     control.disabled = true; control.textContent = "Preparing copy…";
     try {
       await queue;
-      const data = await packageBoard();
+      const snapshot = exportSnapshot();
       const html = document.documentElement.cloneNode(true);
       const find = (selector) => html.querySelector(selector);
       for (const manifest of html.querySelectorAll("link[rel=manifest]")) manifest.remove();
-      find("#portable-data").textContent = JSON.stringify(data).replace(/</g, "\\u003c");
+      find("#portable-data").textContent = JSON.stringify({ format: "moodboard", version: 1, state: snapshot.state, assets: [], embeddedAssetCount: snapshot.assets.size }).replace(/</g, "\\u003c");
+      const marker = "<!--MOODBOARD_PORTABLE_ORIGINALS-->";
+      find("#portable-data").after(document.createComment("MOODBOARD_PORTABLE_ORIGINALS"));
       find("#cloud-config").textContent = "null";
       find("#board-header").classList.remove("shy-hidden");
       find(".app-header").classList.remove("shy-hidden");
@@ -2051,19 +2116,39 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       find("#save-status").textContent = "Opening your space…";
       html.querySelector("body").classList.remove("edit-off", "dragging");
       for (const node of html.querySelectorAll("[disabled]")) node.removeAttribute("disabled");
-      download(new Blob(["<!doctype html>\n", html.outerHTML], { type: "text/html;charset=utf-8" }), `moodboard-${new Date().toISOString().slice(0, 10)}.html`);
+      const template = html.outerHTML, boundary = template.indexOf(marker);
+      const parts = [new Blob(["<!doctype html>\n", template.slice(0, boundary)])];
+      let count = 0;
+      for await (const original of encodedOriginals(snapshot)) {
+        parts.push(new Blob(['<script type="application/json" data-portable-asset>', original.replace(/</g, "\\u003c"), "</" + "script>"]));
+        control.textContent = `Preparing ${++count}/${snapshot.assets.size}…`;
+      }
+      parts.push(new Blob([template.slice(boundary + marker.length)]));
+      download(new Blob(parts, { type: "text/html;charset=utf-8" }), `moodboard-${new Date().toISOString().slice(0, 10)}.html`);
       dirty = false;
       notify("Portable HTML saved with all original images. Copy it to your USB. Save a new copy after making more changes.");
     } catch (error) { report(error); }
-    finally { control.textContent = "↓ Save portable copy"; setSaveStatus(); }
+    finally { exporting = false; control.textContent = "↓ Save portable copy"; setSaveStatus(); }
   }
   async function exportJSON() {
+    if (exporting) { notify("An export is already being prepared. Wait for its download before starting another."); return; }
+    exporting = true; setSaveStatus();
     try {
       await queue;
-      const data = await packageBoard();
-      download(new Blob([JSON.stringify(data)], { type: "application/json" }), `moodboard-backup-${new Date().toISOString().slice(0, 10)}.json`);
+      const snapshot = exportSnapshot();
+      const large = [...snapshot.assets.values()].some(asset => !asset.blob) || [...snapshot.assets.values()].reduce((sum, asset) => sum + asset.blob.size, 0) > 128 * 1024 * 1024;
+      const header = large
+        ? JSON.stringify({ format: "moodboard-lines", version: 1, state: snapshot.state, assetCount: snapshot.assets.size }) + "\n"
+        : JSON.stringify({ format: "moodboard", version: 1, state: snapshot.state }).slice(0, -1) + ',"assets":[';
+      const parts = [new Blob([header])]; let first = true;
+      for await (const original of encodedOriginals(snapshot)) {
+        parts.push(new Blob([large || first ? "" : ",", original, large ? "\n" : ""])); first = false;
+      }
+      if (!large) parts.push(new Blob(["]}"]));
+      download(new Blob(parts, { type: large ? "application/x-ndjson" : "application/json" }), `moodboard-backup-${new Date().toISOString().slice(0, 10)}.${large ? "jsonl" : "json"}`);
       dirty = false; notify("Backup exported with all original images.");
     } catch (error) { report(error); }
+    finally { exporting = false; setSaveStatus(); }
   }
   function guide() {
     openEditor("Take your inspiration anywhere", null);
@@ -2220,8 +2305,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     const file = event.target.files[0]; event.target.value = "";
     if (!file) return;
     try {
-      const raw = JSON.parse(await file.text());
-      const imported = await unpackBoard(raw);
+      const imported = await readBackup(file);
       if (!confirm(`Replace this open collection with the backup? ${cloudEnabled ? "This will also replace the public GitHub board. " : ""}Export your current board first if you want to keep a copy.`)) return;
       await enqueue(async () => {
         const next = clone(imported.state); next.id = uid(); next.revision = 0;
@@ -2337,7 +2421,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   });
   document.addEventListener("touchmove", (event) => { if (gesture?.dragging) event.preventDefault(); }, { passive: false });
   window.addEventListener("beforeunload", (event) => {
-    if (pending || (memoryOnly && dirty)) { event.preventDefault(); event.returnValue = ""; }
+    if (pending || exporting || (memoryOnly && dirty)) { event.preventDefault(); event.returnValue = ""; }
   });
   async function setupOffline() {
     const hosted = location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname);
@@ -2359,7 +2443,18 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     try {
       let embedded = null;
       const payload = JSON.parse($("#portable-data").textContent);
-      if (payload) embedded = await unpackBoard(payload);
+      if (payload) {
+        const chunks = $$("script[data-portable-asset]");
+        if (payload.embeddedAssetCount !== undefined) {
+          if (payload.embeddedAssetCount !== chunks.length) throw new Error("The portable copy is incomplete. Your saved board has not been replaced.");
+          const originals = new Map();
+          for (const chunk of chunks) {
+            const entry = JSON.parse(chunk.textContent); chunk.remove(); await unpackAsset(entry, originals);
+          }
+          validate(payload.state, originals); embedded = { state: payload.state, assets: originals };
+        } else embedded = await unpackBoard(payload);
+        $("#portable-data").textContent = "null";
+      }
       try { db = await openDB(); }
       catch (error) {
         memoryOnly = true; console.error(error);

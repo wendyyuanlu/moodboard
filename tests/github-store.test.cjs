@@ -162,3 +162,17 @@ test("legacy clients can recover a historical baseline without downloading origi
   assert.deepEqual(await storeFor(remote, false).readState(saved.revision), base);
   await assert.rejects(storeFor(remote, false).readState("not-a-sha"), /Invalid shared board baseline/);
 });
+test("metadata-only saves reuse immutable remote originals without downloading or base64 packaging the collection", async () => {
+  const remote = mockGitHub(), writer = storeFor(remote), data = board(), saved = await writer.write(null, data);
+  const cached = await writer.readCached(undefined, new Map());
+  cached.board.state.settings.layout = "grid"; cached.board.state.revision++;
+  const calls = remote.calls.length;
+  const next = await writer.writeCached(saved.revision, cached.board.state, new Map(cached.board.assets));
+  assert.deepEqual(remote.packageAt().board.state, cached.board.state);
+  assert.equal(remote.calls.slice(calls).filter(call => call.path.startsWith("/raw/images/")).length, 0);
+  assert.equal(remote.calls.slice(calls).filter(call => call.path === "/git/blobs" && call.data.content === png.toString("base64")).length, 0);
+  assert.match(next.originals[0][1].url, /\/images\//);
+  cached.board.state.tabs[0].sections[0].items = []; cached.board.state.revision++;
+  await writer.writeCached(next.revision, cached.board.state, new Map());
+  assert.equal(remote.files.size, 1);
+});

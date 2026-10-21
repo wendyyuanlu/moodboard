@@ -10,7 +10,7 @@
   let deleteSkipsRemaining = 0, deleting = false;
   let state, db, assets = new Map(), urls = new Map();
   let editable = true, selection = new Set(), sectionSelection = new Set(), cursor = null, editorAction, editorDelete, editorSuccess;
-  let queue = Promise.resolve(), pending = 0, memoryOnly = false, dirty = false;
+  let queue = Promise.resolve(), pending = 0, memoryOnly = false, dirty = false, exporting = false;
   let noticeTimer, viewItems = [], viewIndex = 0, internalClipboard = [];
   let suppressClickUntil = 0, gesture = null, dragFrame = 0, selectedTarget = null;
   let masonryFrame = 0;
@@ -155,7 +155,7 @@
       if (memoryOnly && cloudInfo.dirty) status = "In memory · export a backup";
     }
     syncText($("#save-status"), pending ? "Saving…" : status);
-    $("#save-portable").disabled = pending > 0 || !state || Boolean(cloudEnabled && !cloudReady && !cloudInfo.revision && !allItems().length);
+    $("#save-portable").disabled = exporting || pending > 0 || !state || Boolean(cloudEnabled && !cloudReady && !cloudInfo.revision && !allItems().length);
     updateGitHubControls();
   }
   function syncText(node, text) {
@@ -337,7 +337,7 @@
     renderTabs();
     masonryObserver.disconnect();
     $("#sections").replaceChildren(...current.sections.map(renderSection));
-    renderCursor(); renderSelection(); setSaveStatus();
+    renderCursor(); renderSelection(); setSaveStatus(); updateOfflineStatus();
     masonryObserver.observe($("#sections"));
     for (const card of $$(".image-card")) masonryObserver.observe(card);
     scheduleMasonry();
@@ -1246,6 +1246,7 @@
   function updateOfflineStatus() {
     if (!shellReady) return;
     const cached = [...assets.values()].filter(asset => asset.blob instanceof Blob).length;
+    if (cached === assets.size) originalCacheError = "";
     $("#connection-status").textContent = originalCacheError ? "Originals not fully cached · reconnect and Force re-sync"
       : cached < assets.size ? `Caching originals ${cached}/${assets.size} · stay online`
         : memoryOnly ? "Offline shell only · export to keep originals" : "Offline ready";
@@ -1301,34 +1302,65 @@
       if (!originalCacheError && [...assets.values()].some(asset => !(asset.blob instanceof Blob))) cacheOriginals();
     }
   }
-  async function packageBoard() {
-    const data = { format: "moodboard", version: 1, state: clone(state), assets: [] };
-    const snapshot = new Map(assets);
-    validate(data.state, snapshot);
-    for (const [id, asset] of snapshot) {
-      const original = await ensureOriginal(id, asset);
-      data.assets.push([id, { name: asset.name, width: asset.width, height: asset.height, data: await blobToDataURL(original.blob) }]);
-    }
-    return data;
-  }
   async function unpackBoard(data, shared = false) {
     if (!data || data.format !== "moodboard" || data.version !== 1 || !Array.isArray(data.assets)) throw new Error("Choose a valid moodboard JSON backup.");
     const result = new Map();
-    for (const entry of data.assets) {
-      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || result.has(entry[0])) throw new Error("The backup contains invalid or duplicate image records.");
-      const [key, asset] = entry;
-      if (shared && asset && MoodboardFormat.validRemote(asset.remote)) { result.set(key, asset); continue; }
-      if (!asset || typeof asset.data !== "string" || !/^data:image\/(png|jpeg|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=\r\n]+$/i.test(asset.data)) throw new Error("The backup contains an unsupported image.");
-      const comma = asset.data.indexOf(","), mime = asset.data.slice(5, asset.data.indexOf(";"));
-      const binary = atob(asset.data.slice(comma + 1));
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-      const blob = new Blob([bytes], { type: mime });
-      const decoded = await readImage(blob);
-      result.set(key, { ...decoded, name: asset.name });
-    }
+    for (const entry of data.assets) await unpackAsset(entry, result, shared);
     validate(data.state, result);
     return { state: data.state, assets: result };
+  }
+  async function unpackAsset(entry, result, shared = false) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || result.has(entry[0])) throw new Error("The backup contains invalid or duplicate image records.");
+    const [key, asset] = entry;
+    if (shared && asset && MoodboardFormat.validRemote(asset.remote)) { result.set(key, asset); return; }
+    if (!asset || typeof asset.data !== "string" || !/^data:image\/(png|jpeg|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=\r\n]+$/i.test(asset.data)) throw new Error("The backup contains an unsupported image.");
+    const comma = asset.data.indexOf(","), mime = asset.data.slice(5, asset.data.indexOf(";"));
+    const binary = atob(asset.data.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    const blob = new Blob([bytes], { type: mime });
+    const decoded = await readImage(blob);
+    result.set(key, { ...decoded, name: asset.name });
+  }
+  async function readBackup(file) {
+    const prefix = await file.slice(0, 100).text();
+    if (!prefix.startsWith('{"format":"moodboard-lines",')) return unpackBoard(JSON.parse(await file.text()));
+    const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader(), originals = new Map();
+    let header = null, parts = [];
+    const line = async value => {
+      if (!value.trim()) return;
+      const record = JSON.parse(value);
+      if (!header) {
+        if (record.format !== "moodboard-lines" || record.version !== 1 || !Number.isSafeInteger(record.assetCount) || record.assetCount < 0) throw new Error("Choose a valid moodboard JSON Lines backup.");
+        header = record;
+      } else await unpackAsset(record, originals);
+    };
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        let start = 0, end;
+        while ((end = value.indexOf("\n", start)) !== -1) {
+          parts.push(value.slice(start, end)); await line(parts.join("")); parts = []; start = end + 1;
+        }
+        if (start < value.length) parts.push(value.slice(start));
+      }
+      if (parts.length) await line(parts.join(""));
+      if (!header || header.assetCount !== originals.size) throw new Error("The backup is incomplete. Your current board has not been replaced.");
+      validate(header.state, originals);
+      return { state: header.state, assets: originals };
+    } finally { await reader.cancel(); reader.releaseLock(); }
+  }
+  function exportSnapshot() {
+    const snapshot = { state: clone(state), assets: new Map(assets) };
+    validate(snapshot.state, snapshot.assets);
+    return snapshot;
+  }
+  async function* encodedOriginals(snapshot) {
+    for (const [id, asset] of snapshot.assets) {
+      const original = await ensureOriginal(id, asset);
+      yield JSON.stringify([id, { name: asset.name, width: asset.width, height: asset.height, data: await blobToDataURL(original.blob) }]);
+    }
   }
   function scheduleCloud(delay = 1200) {
     if (!cloudEnabled) return;
@@ -1344,7 +1376,7 @@
     });
   }
   async function cloudRequest(method = "GET", body, conditional = false) {
-    const data = method === "GET" ? await github.readCached(conditional ? cloudInfo.revision : undefined, new Map(assets)) : await github.write(body.expectedRevision, body.board);
+    const data = method === "GET" ? await github.readCached(conditional ? cloudInfo.revision : undefined, new Map(assets)) : await github.writeCached(body.expectedRevision, body.board.state, body.board.assets);
     if (data === null) return null;
     if (!(data.revision === null || typeof data.revision === "string" && /^[a-f0-9]{40}$/.test(data.revision))) throw new Error("The save service returned an invalid revision.");
     return data;
@@ -1403,7 +1435,7 @@
             } else if (!record.board || !record.revision) throw new Error("The shared board response is incomplete.");
             else if (!cloudInfo.revision && state.id !== record.board.state.id && allItems().length) {
               await installShared(record, true);
-            } else if (!cloudInfo.revision && allItems().length && JSON.stringify(await packageBoard()) !== JSON.stringify(record.board)) {
+            } else if (!cloudInfo.revision && allItems().length && JSON.stringify(state) !== JSON.stringify(record.board.state)) {
               const error = new Error("This device has an existing local version. Merge it with the shared board in Settings, or export it before loading the shared version.");
               error.conflict = true; throw error;
             } else if (cloudInfo.dirty) {
@@ -1430,14 +1462,16 @@
       if (cloudInfo.dirty) {
         if (!github.connected) { cloudError = ""; cloudReady = true; return; }
         await queue;
-        const board = await packageBoard(), sentId = board.state.id, sentRevision = board.state.revision;
+        const board = exportSnapshot(), sentId = board.state.id, sentRevision = board.state.revision;
         const saved = await cloudRequest("PUT", { expectedRevision: cloudInfo.revision, board });
         await enqueue(async () => {
           cloudInfo.revision = saved.revision;
           cloudInfo.baseState = clone(board.state);
           cloudInfo.dirty = state.id !== sentId || state.revision !== sentRevision;
           cloudInfo.lastSyncedAt = Date.now();
-          await saveCloudMeta();
+          const nextAssets = new Map(assets);
+          for (const [id, remote] of saved.originals) if (nextAssets.has(id)) nextAssets.set(id, { ...nextAssets.get(id), remote });
+          await persist(state, nextAssets, state.revision, cloudInfo); assets = nextAssets;
         });
       }
       cloudError = ""; cloudReady = true;
@@ -1495,15 +1529,19 @@
   }
   async function exportPortable() {
     if (!state) return;
+    if (exporting) { notify("An export is already being prepared. Wait for its download before starting another."); return; }
+    exporting = true;
     const control = $("#save-portable");
     control.disabled = true; control.textContent = "Preparing copy…";
     try {
       await queue;
-      const data = await packageBoard();
+      const snapshot = exportSnapshot();
       const html = document.documentElement.cloneNode(true);
       const find = (selector) => html.querySelector(selector);
       for (const manifest of html.querySelectorAll("link[rel=manifest]")) manifest.remove();
-      find("#portable-data").textContent = JSON.stringify(data).replace(/</g, "\\u003c");
+      find("#portable-data").textContent = JSON.stringify({ format: "moodboard", version: 1, state: snapshot.state, assets: [], embeddedAssetCount: snapshot.assets.size }).replace(/</g, "\\u003c");
+      const marker = "<!--MOODBOARD_PORTABLE_ORIGINALS-->";
+      find("#portable-data").after(document.createComment("MOODBOARD_PORTABLE_ORIGINALS"));
       find("#cloud-config").textContent = "null";
       find("#board-header").classList.remove("shy-hidden");
       find(".app-header").classList.remove("shy-hidden");
@@ -1518,19 +1556,39 @@
       find("#save-status").textContent = "Opening your space…";
       html.querySelector("body").classList.remove("edit-off", "dragging");
       for (const node of html.querySelectorAll("[disabled]")) node.removeAttribute("disabled");
-      download(new Blob(["<!doctype html>\n", html.outerHTML], { type: "text/html;charset=utf-8" }), `moodboard-${new Date().toISOString().slice(0, 10)}.html`);
+      const template = html.outerHTML, boundary = template.indexOf(marker);
+      const parts = [new Blob(["<!doctype html>\n", template.slice(0, boundary)])];
+      let count = 0;
+      for await (const original of encodedOriginals(snapshot)) {
+        parts.push(new Blob(['<script type="application/json" data-portable-asset>', original.replace(/</g, "\\u003c"), "</" + "script>"]));
+        control.textContent = `Preparing ${++count}/${snapshot.assets.size}…`;
+      }
+      parts.push(new Blob([template.slice(boundary + marker.length)]));
+      download(new Blob(parts, { type: "text/html;charset=utf-8" }), `moodboard-${new Date().toISOString().slice(0, 10)}.html`);
       dirty = false;
       notify("Portable HTML saved with all original images. Copy it to your USB. Save a new copy after making more changes.");
     } catch (error) { report(error); }
-    finally { control.textContent = "↓ Save portable copy"; setSaveStatus(); }
+    finally { exporting = false; control.textContent = "↓ Save portable copy"; setSaveStatus(); }
   }
   async function exportJSON() {
+    if (exporting) { notify("An export is already being prepared. Wait for its download before starting another."); return; }
+    exporting = true; setSaveStatus();
     try {
       await queue;
-      const data = await packageBoard();
-      download(new Blob([JSON.stringify(data)], { type: "application/json" }), `moodboard-backup-${new Date().toISOString().slice(0, 10)}.json`);
+      const snapshot = exportSnapshot();
+      const large = [...snapshot.assets.values()].some(asset => !asset.blob) || [...snapshot.assets.values()].reduce((sum, asset) => sum + asset.blob.size, 0) > 128 * 1024 * 1024;
+      const header = large
+        ? JSON.stringify({ format: "moodboard-lines", version: 1, state: snapshot.state, assetCount: snapshot.assets.size }) + "\n"
+        : JSON.stringify({ format: "moodboard", version: 1, state: snapshot.state }).slice(0, -1) + ',"assets":[';
+      const parts = [new Blob([header])]; let first = true;
+      for await (const original of encodedOriginals(snapshot)) {
+        parts.push(new Blob([large || first ? "" : ",", original, large ? "\n" : ""])); first = false;
+      }
+      if (!large) parts.push(new Blob(["]}"]));
+      download(new Blob(parts, { type: large ? "application/x-ndjson" : "application/json" }), `moodboard-backup-${new Date().toISOString().slice(0, 10)}.${large ? "jsonl" : "json"}`);
       dirty = false; notify("Backup exported with all original images.");
     } catch (error) { report(error); }
+    finally { exporting = false; setSaveStatus(); }
   }
   function guide() {
     openEditor("Take your inspiration anywhere", null);
@@ -1687,8 +1745,7 @@
     const file = event.target.files[0]; event.target.value = "";
     if (!file) return;
     try {
-      const raw = JSON.parse(await file.text());
-      const imported = await unpackBoard(raw);
+      const imported = await readBackup(file);
       if (!confirm(`Replace this open collection with the backup? ${cloudEnabled ? "This will also replace the public GitHub board. " : ""}Export your current board first if you want to keep a copy.`)) return;
       await enqueue(async () => {
         const next = clone(imported.state); next.id = uid(); next.revision = 0;
@@ -1804,7 +1861,7 @@
   });
   document.addEventListener("touchmove", (event) => { if (gesture?.dragging) event.preventDefault(); }, { passive: false });
   window.addEventListener("beforeunload", (event) => {
-    if (pending || (memoryOnly && dirty)) { event.preventDefault(); event.returnValue = ""; }
+    if (pending || exporting || (memoryOnly && dirty)) { event.preventDefault(); event.returnValue = ""; }
   });
   async function setupOffline() {
     const hosted = location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname);
@@ -1826,7 +1883,18 @@
     try {
       let embedded = null;
       const payload = JSON.parse($("#portable-data").textContent);
-      if (payload) embedded = await unpackBoard(payload);
+      if (payload) {
+        const chunks = $$("script[data-portable-asset]");
+        if (payload.embeddedAssetCount !== undefined) {
+          if (payload.embeddedAssetCount !== chunks.length) throw new Error("The portable copy is incomplete. Your saved board has not been replaced.");
+          const originals = new Map();
+          for (const chunk of chunks) {
+            const entry = JSON.parse(chunk.textContent); chunk.remove(); await unpackAsset(entry, originals);
+          }
+          validate(payload.state, originals); embedded = { state: payload.state, assets: originals };
+        } else embedded = await unpackBoard(payload);
+        $("#portable-data").textContent = "null";
+      }
       try { db = await openDB(); }
       catch (error) {
         memoryOnly = true; console.error(error);

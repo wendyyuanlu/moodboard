@@ -22,6 +22,15 @@ async function png(page, width = 120, height = 80, color = "#b6c1a0") {
   return Buffer.from(data, "base64");
 }
 function file(name, buffer) { return { name, mimeType: "image/png", buffer }; }
+function portablePayload(source) {
+  const data = JSON.parse(source.match(/<script id="portable-data" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+  if (data.embeddedAssetCount !== undefined) {
+    const embedded = source.slice(0, source.indexOf('<script id="cloud-config"'));
+    data.assets = [...embedded.matchAll(/<script type="application\/json" data-portable-asset>([\s\S]*?)<\/script>/g)].map(match => JSON.parse(match[1]));
+    expect(data.assets).toHaveLength(data.embeddedAssetCount);
+  }
+  return data;
+}
 async function upload(page, names, buffer) {
   await page.locator("#image-files").setInputFiles(names.map((name) => file(name, buffer)));
   await expect(page.locator("#save-status")).toHaveText("Saved on this device");
@@ -191,7 +200,7 @@ test("rapid paste positions, original bytes, full-size viewer and portable offli
   const portablePath = testInfo.outputPath("portable.html");
   await download.saveAs(portablePath);
   const source = fs.readFileSync(portablePath, "utf8");
-  const payload = JSON.parse(source.match(/<script id="portable-data" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+  const payload = portablePayload(source);
   expect(payload.state.tabs[0].sections[0].items.map((item) => item.title)).toEqual(await titles(page));
   expect(Buffer.from(payload.assets[0][1].data.split(",")[1], "base64").equals(buffer)).toBe(true);
   expect(source).not.toContain("blob:http");
@@ -1607,7 +1616,7 @@ test("selection copies share one original but keep independent crops and compact
   expect(saved.assets).toHaveLength(1); expect(Buffer.from(saved.assets[0][1].bytes).equals(bytes)).toBe(true);
   const event = page.waitForEvent("download"); await page.locator("#save-portable").click();
   const output = testInfo.outputPath("shared-original.html"); await (await event).saveAs(output);
-  const payload = JSON.parse(fs.readFileSync(output, "utf8").match(/<script id="portable-data" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+  const payload = portablePayload(fs.readFileSync(output, "utf8"));
   expect(payload.assets).toHaveLength(1); expect(payload.state.tabs[0].sections[0].items).toEqual(cropped);
   expect(Buffer.from(payload.assets[0][1].data.split(",")[1], "base64").equals(bytes)).toBe(true);
   await page.getByRole("checkbox", { name: "Select shared-original.png", exact: true }).first().check();
@@ -1735,7 +1744,7 @@ test("USB portable copy embeds every original across tabs and collapsed sections
   const event = page.waitForEvent("download"); await page.locator("#save-portable").click();
   const usbPath = testInfo.outputPath("usb", "moodboard.html"); fs.mkdirSync(path.dirname(usbPath), { recursive: true }); await (await event).saveAs(usbPath);
   const contents = fs.readFileSync(usbPath, "utf8");
-  const embedded = JSON.parse(contents.match(/<script id="portable-data" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+  const embedded = portablePayload(contents);
   expect(embedded.assets).toHaveLength(4);
   expect(embedded.state.tabs.flatMap((tab) => tab.sections.flatMap((section) => section.items))).toHaveLength(4);
   for (const [id, asset] of embedded.assets) expect(crypto.createHash("sha256").update(Buffer.from(asset.data.split(",")[1], "base64")).digest("hex")).toBe(hashes.get(id));
@@ -1907,6 +1916,10 @@ test("fresh mobile readers browse originals and tabs before a slow background or
     await expect(reader.locator(".image-hit img")).toHaveJSProperty("naturalWidth", 120);
     expect((await snapshot(reader)).assets.find(([id]) => id === "delayed")[1].bytes).toBeNull();
     await reader.locator('.tab[data-tab-id="outfits"]').click(); await expect(reader.locator(".image-card")).toHaveCount(1);
+    await reader.getByRole("button", { name: "Grid", exact: true }).click();
+    await authenticateShared(reader);
+    expect(shared.record.board.state.settings.layout).toBe("grid");
+    expect((await snapshot(reader)).assets.find(([id]) => id === "delayed")[1].bytes).toBeNull();
     release();
     await expect(reader.locator(".image-hit img")).toHaveJSProperty("naturalWidth", 120);
     await expect.poll(async () => (await snapshot(reader)).assets.every(([, asset]) => asset.bytes !== null)).toBe(true);
@@ -1962,4 +1975,77 @@ test("a GitHub branch race retries and rebases rather than leaving a permanent s
     expect(new Set(await titles(author.page))).toEqual(new Set(["shared-original.png", "racing-import.png", "local-after-race.png"]));
     expect(shared.record.board.state.tabs).toHaveLength(1);
   } finally { await shared.close(); }
+});
+
+test("JSON Lines backups restore originals and reject missing or duplicate records without replacement", async ({ page }) => {
+  await ready(page); const bytes = await png(page); await upload(page, ["lines.png"], bytes);
+  const saved = await snapshot(page);
+  const header = { format: "moodboard-lines", version: 1, state: saved.state, assetCount: 1 };
+  const [id, original] = saved.assets[0];
+  const record = [id, { name: original.name, width: original.width, height: original.height, data: `data:image/png;base64,${bytes.toString("base64")}` }];
+  const lines = JSON.stringify(header) + "\n" + JSON.stringify(record) + "\n";
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator("#backup-file").setInputFiles({ name: "backup.jsonl", mimeType: "application/x-ndjson", buffer: Buffer.from(lines) });
+  await expect(page.locator("#notice")).toContainText("Backup imported");
+  expect(Buffer.from((await snapshot(page)).assets[0][1].bytes).equals(bytes)).toBe(true);
+  const restored = (await snapshot(page)).state;
+  for (const invalid of [JSON.stringify(header) + "\n", lines + JSON.stringify(record) + "\n"]) {
+    await page.locator("#backup-file").setInputFiles({ name: "bad.jsonl", mimeType: "application/x-ndjson", buffer: Buffer.from(invalid) });
+    await expect(page.locator("#notice")).toContainText("Import failed");
+    expect((await snapshot(page)).state).toEqual(restored);
+  }
+});
+
+test("exports above 512 MiB open offline and streaming JSON Lines restores every original", async ({ page, browser }, testInfo) => {
+  test.setTimeout(240000);
+  await ready(page); await upload(page, ["large-original.png"], await png(page));
+  const expectedHash = await page.evaluate(async () => {
+    const db = await new Promise(resolve => { const r = indexedDB.open("moodboard-portable", 1); r.onsuccess = () => resolve(r.result); });
+    const read = (s, k) => new Promise(resolve => { const r = db.transaction(s).objectStore(s).get(k); r.onsuccess = () => resolve(r.result); });
+    const id = await read("meta", "active"), board = await read("boards", id), original = board.assets[0][1];
+    const blob = new Blob([original.blob, new Uint8Array(17 * 1024 * 1024)], { type: "image/png" });
+    const item = board.state.tabs[0].sections[0].items[0];
+    board.assets = Array.from({ length: 24 }, (_, index) => [`asset-${index}`, { ...original, blob, name: `large-${index}.png` }]);
+    board.state.tabs[0].sections[0].items = board.assets.map(([assetId], index) => ({ ...item, id: `item-${index}`, assetId }));
+    board.state.revision++;
+    await new Promise((resolve, reject) => { const tx = db.transaction("boards", "readwrite"); tx.objectStore("boards").put(board, id); tx.oncomplete = resolve; tx.onabort = () => reject(tx.error); });
+    db.close();
+    return [...new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  });
+  await page.reload(); await expect(page.locator(".image-card")).toHaveCount(24);
+  const portable = testInfo.outputPath("large-portable.html"), backup = testInfo.outputPath("large-backup.jsonl");
+  const offline = await browser.newContext({ offline: true });
+  const hashes = async reader => reader.evaluate(async () => {
+    const db = await new Promise(resolve => { const r = indexedDB.open("moodboard-portable", 1); r.onsuccess = () => resolve(r.result); });
+    const get = (s, k) => new Promise(resolve => { const r = db.transaction(s).objectStore(s).get(k); r.onsuccess = () => resolve(r.result); });
+    const board = await get("boards", await get("meta", "active")); db.close();
+    const result = [];
+    for (const [, asset] of [board.assets[0], board.assets.at(-1)]) result.push([...new Uint8Array(await crypto.subtle.digest("SHA-256", await asset.blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join(""));
+    return { count: board.assets.length, hashes: result };
+  });
+  try {
+    const htmlDownload = page.waitForEvent("download", { timeout: 120000 });
+    await page.locator("#save-portable").click(); await (await htmlDownload).saveAs(portable);
+    expect(fs.statSync(portable).size).toBeGreaterThan(512 * 1024 * 1024);
+    const reader = await offline.newPage(), errors = [], requests = [];
+    reader.on("pageerror", error => errors.push(error.message));
+    reader.on("request", request => { if (/^https?:/.test(request.url())) requests.push(request.url()); });
+    await reader.goto(pathToFileURL(portable).href, { timeout: 120000 });
+    await expect(reader.locator(".image-card")).toHaveCount(24, { timeout: 120000 });
+    expect(await hashes(reader)).toEqual({ count: 24, hashes: [expectedHash, expectedHash] });
+    expect(errors).toEqual([]); expect(requests).toEqual([]);
+    await reader.close(); fs.unlinkSync(portable);
+    await page.locator("#more").click();
+    const jsonDownload = page.waitForEvent("download", { timeout: 120000 });
+    await page.getByRole("button", { name: "Export JSON backup", exact: true }).click();
+    const download = await jsonDownload; expect(download.suggestedFilename()).toMatch(/\.jsonl$/); await download.saveAs(backup);
+    expect(fs.statSync(backup).size).toBeGreaterThan(512 * 1024 * 1024);
+    await page.locator("#cancel-editor").click();
+    page.once("dialog", dialog => dialog.accept()); await page.locator("#backup-file").setInputFiles(backup);
+    await expect(page.locator("#notice")).toContainText("Backup imported", { timeout: 120000 });
+    expect(await hashes(page)).toEqual({ count: 24, hashes: [expectedHash, expectedHash] });
+  } finally {
+    await offline.close();
+    for (const file of [portable, backup]) if (fs.existsSync(file)) fs.unlinkSync(file);
+  }
 });

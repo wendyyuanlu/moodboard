@@ -32,6 +32,19 @@ const MoodboardGitHub = (() => {
     if (mime === "image/bmp") return text.startsWith("BM");
     return [0, 0, 1, 0].every((value, index) => head[index] === value);
   }
+  async function originalRecord(asset, bytes, mime) {
+    if (!imageSignature(bytes, mime)) throw new SaveError(400, "Image bytes do not match the declared format.");
+    if (bytes.length > 100 * 1024 * 1024) throw new SaveError(413, "GitHub does not accept image files larger than 100 MiB. Your local original is unchanged.");
+    const filename = String(asset.name).replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "image";
+    return { name: asset.name, width: asset.width, height: asset.height, mime, path: `images/${await hash("SHA-256", bytes)}-${filename}`, sha: await gitHash(bytes) };
+  }
+  async function preparedManifest(state, records, files) {
+    const referenced = new Set(state.tabs.flatMap(tab => tab.sections.flatMap(section => section.items.map(item => item.assetId))));
+    if (referenced.size !== records.length) throw new SaveError(400, "Remove unreferenced images before uploading.");
+    const manifest = { format: "moodboard-github", version: 1, state, assets: records };
+    const bytes = encoder.encode(JSON.stringify(manifest));
+    return { manifest, bytes, revision: await gitHash(bytes), files };
+  }
   async function prepareBoard(board) {
     if (!board || board.format !== "moodboard" || board.version !== 1 || !Array.isArray(board.assets)) throw new SaveError(400, "Invalid moodboard package.");
     const assets = new Map(), files = new Map(), records = [];
@@ -42,20 +55,14 @@ const MoodboardGitHub = (() => {
       const match = /^data:(image\/[^;,]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(asset.data);
       if (!match || !format.supportedImage.test(match[1])) throw new SaveError(400, "Use supported raster images only.");
       const mime = match[1].toLowerCase(), bytes = bytesFromBase64(match[2]);
-      if (base64(bytes) !== match[2] || !imageSignature(bytes, mime)) throw new SaveError(400, "Image bytes do not match the declared format.");
-      if (bytes.length > 100 * 1024 * 1024) throw new SaveError(413, "GitHub does not accept image files larger than 100 MiB. Your local original is unchanged.");
+      if (base64(bytes) !== match[2]) throw new SaveError(400, "Image bytes do not match the declared format.");
       assets.set(id, { ...asset, blob: new Blob([bytes], { type: mime }) });
-      const filename = String(asset.name).replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "image";
-      const path = `images/${await hash("SHA-256", bytes)}-${filename}`, sha = await gitHash(bytes);
-      files.set(path, { bytes, sha });
-      records.push([id, { name: asset.name, width: asset.width, height: asset.height, mime, path, sha }]);
+      const record = await originalRecord(asset, bytes, mime);
+      files.set(record.path, { bytes, sha: record.sha });
+      records.push([id, record]);
     }
     try { format.validate(board.state, assets); } catch (error) { throw new SaveError(400, error.message); }
-    const referenced = new Set(board.state.tabs.flatMap((tab) => tab.sections.flatMap((section) => section.items.map((item) => item.assetId))));
-    if (referenced.size !== assets.size) throw new SaveError(400, "Remove unreferenced images before uploading.");
-    const manifest = { format: "moodboard-github", version: 1, state: board.state, assets: records };
-    const bytes = encoder.encode(JSON.stringify(manifest));
-    return { manifest, bytes, revision: await gitHash(bytes), files };
+    return preparedManifest(board.state, records, files);
   }
   function createGitHubStore({ owner, repo, branch = "board" }, { fetchImpl = fetch, initialToken = "" } = {}) {
     if (![owner, repo, branch].every((value) => /^[a-zA-Z0-9._-]+$/.test(value))) throw new Error("Invalid GitHub repository configuration.");
@@ -144,15 +151,34 @@ const MoodboardGitHub = (() => {
       await prepareBoard(board);
       return { revision: record.revision, board };
     }
-    async function write(expectedRevision, board) {
+    async function prepareCachedBoard(state, assets) {
+      format.validate(state, assets);
+      const records = [], files = new Map();
+      for (const [id, asset] of assets) {
+        let record;
+        if (format.validRemote(asset.remote) && asset.remote.url.startsWith(raw(""))) {
+          record = { name: asset.name, width: asset.width, height: asset.height, mime: asset.remote.mime,
+            path: asset.remote.url.split("/").slice(6).join("/"), sha: asset.remote.sha };
+        } else {
+          if (!(asset.blob instanceof Blob)) throw new SaveError(400, "This original must be cached before uploading.");
+          record = await originalRecord(asset, new Uint8Array(await asset.blob.arrayBuffer()), asset.blob.type.toLowerCase());
+        }
+        records.push([id, record]); files.set(record.path, { sha: record.sha, blob: asset.blob, remote: asset.remote });
+      }
+      return preparedManifest(state, records, files);
+    }
+    async function write(expectedRevision, board, cachedAssets) {
       if (!token) throw new SaveError(401, "Enable auto-sync in Settings to upload this device's pending edits.");
-      const prepared = await prepareBoard(board), current = await loadMeta();
-      if (prepared.revision === current.revision) return { revision: current.revision };
+      const prepared = cachedAssets ? await prepareCachedBoard(board.state, cachedAssets) : await prepareBoard(board), current = await loadMeta();
+      const saved = (revision, commit) => ({ revision, originals: prepared.manifest.assets.map(([id, asset]) =>
+        [id, { url: `${raw(commit)}/${asset.path}`, sha: asset.sha, mime: asset.mime }]) });
+      if (prepared.revision === current.revision) return saved(current.revision, current.head);
       if (expectedRevision !== current.revision) throw new SaveError(409, "Someone else saved a newer shared board. Your local changes are safe. Resolve the conflict in Settings.");
       const changes = [];
       for (const [path, file] of prepared.files) {
         if (current.paths.get(path) === file.sha) continue;
-        const uploaded = await api("/git/blobs", "POST", { content: base64(file.bytes), encoding: "base64" });
+        const bytes = file.bytes || new Uint8Array(await (file.blob || await readOriginal(file.remote)).arrayBuffer());
+        const uploaded = await api("/git/blobs", "POST", { content: base64(bytes), encoding: "base64" });
         if (uploaded.sha !== file.sha) throw new SaveError(502, "GitHub returned an unexpected image checksum.");
         changes.push({ path, mode: "100644", type: "blob", sha: uploaded.sha });
       }
@@ -161,12 +187,12 @@ const MoodboardGitHub = (() => {
       if (manifest.sha !== prepared.revision) throw new SaveError(502, "GitHub returned an unexpected board checksum.");
       changes.push({ path: "board.json", mode: "100644", type: "blob", sha: manifest.sha });
       const tree = await api("/git/trees", "POST", { ...(current.tree ? { base_tree: current.tree } : {}), tree: changes });
-      const count = board.state.tabs.reduce((sum, tab) => sum + tab.sections.reduce((sum, section) => sum + section.items.length, 0), 0);
+      const count = prepared.manifest.state.tabs.reduce((sum, tab) => sum + tab.sections.reduce((sum, section) => sum + section.items.length, 0), 0);
       const commit = await api("/git/commits", "POST", { message: `Save shared moodboard (${count} images)\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`,
         tree: tree.sha, parents: current.head ? [current.head] : [] });
       if (current.head) await api(`/git/refs/heads/${branch}`, "PATCH", { sha: commit.sha, force: false });
       else await api("/git/refs", "POST", { ref: `refs/heads/${branch}`, sha: commit.sha });
-      return { revision: manifest.sha };
+      return saved(manifest.sha, commit.sha);
     }
     async function readState(revision) {
       if (!/^[a-f0-9]{40}$/.test(revision)) throw new SaveError(400, "Invalid shared board baseline revision.");
@@ -203,7 +229,8 @@ const MoodboardGitHub = (() => {
       readCached: (knownRevision, cachedAssets) => serialize(() => read(knownRevision, cachedAssets)),
       readOriginal,
       readState: (revision) => serialize(() => readState(revision)),
-      write: (expectedRevision, board) => serialize(() => write(expectedRevision, board))
+      write: (expectedRevision, board) => serialize(() => write(expectedRevision, board)),
+      writeCached: (expectedRevision, state, assets) => serialize(() => write(expectedRevision, { state }, assets))
     };
   }
   return Object.freeze({ createGitHubStore, prepareBoard, gitHash, SaveError });
