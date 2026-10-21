@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f5f4ef">
+<meta name="description" content="A portable, offline-first space for your inspiration.">
+<title>moodboard — your portable inspiration space</title>
+<style>/* APP_STYLES */</style>
+</head>
+<body>
+<header class="app-header">
+<a class="brand" href="#" aria-label="moodboard home"><span class="brand-symbol" aria-hidden="true">▦</span>moodboard<span class="brand-dot">.</span></a>
+<span class="tagline">a little space for inspiration</span>
+<div class="header-actions"><span id="save-status" role="status">Opening your space…</span><button id="save-portable" class="button">↓ Save portable copy</button><button id="more" class="icon-button" aria-label="Settings and backups">☷</button></div>
+</header>
+<main>
+<section class="intro"><div><p class="eyebrow">COLLECT. CONNECT. CREATE.</p><h1>Your ideas, <em>all together.</em></h1><p class="subtitle">Paste a moment. Keep a feeling. Make it yours.</p></div><div class="intro-actions"><button id="edit-toggle" class="button" aria-pressed="true">Edit on</button><button id="add-images" class="button primary">+ Add images</button></div></section>
+<div class="tabs-row"><nav id="tabs" aria-label="Moodboard tabs"></nav><button id="new-tab" class="icon-button edit-control" aria-label="Add tab">+</button></div>
+<section class="board-toolbar">
+<div class="board-heading"><h2 id="board-title">Your space</h2><span id="image-count"></span><button id="tab-options" class="icon-button edit-control" aria-label="Edit current tab">···</button></div>
+<div class="layout-tools"><div class="view-switch" role="group" aria-label="Layout"><button data-layout="masonry" aria-pressed="true">Masonry</button><button data-layout="grid" aria-pressed="false">Grid</button><button data-layout="list" aria-pressed="false">List</button></div><label class="zoom-label">Size <input id="zoom" type="range" min="100" max="420" step="10" value="220" aria-label="Image display size"></label></div>
+</section>
+<aside id="paste-toolbar" class="paste-toolbar edit-control"><span class="paste-icon" aria-hidden="true">↳</span><span id="paste-location">Paste at the bottom</span><button id="paste-button" class="text-button">Paste</button><button id="paste-bottom" class="text-button">Append at bottom</button><button id="new-section" class="text-button">+ Section</button></aside>
+<div id="storage-warning" class="warning" role="alert" hidden></div>
+<div id="sections"></div>
+<button id="bottom-add" class="bottom-add edit-control">+ Add a section</button>
+<p class="board-footnote">Original images. No compression. No account. Just your ideas.</p>
+</main>
+<footer><span>Made for your wandering mind.</span><button id="help" class="text-button">Offline & portability guide ↗</button><span id="connection-status"></span></footer>
+<aside id="selection-bar" class="selection-bar" aria-label="Selected image actions" hidden><strong id="selection-count"></strong><button id="select-all">Select all</button><button id="copy-selected">Copy to…</button><button id="move-selected">Move to…</button><button id="delete-selected">Delete</button><button id="clear-selection" aria-label="Clear selection">×</button></aside>
+<div id="rubber-band" hidden></div><div id="drag-preview" hidden></div><div id="notice" role="status" hidden></div>
+<dialog id="editor"><form id="editor-form"><div class="dialog-heading"><h2 id="editor-title"></h2><button id="close-editor" class="icon-button" type="button" aria-label="Close dialog">×</button></div><div id="editor-fields"></div><p id="editor-error" class="error" role="alert" hidden></p><div id="editor-extra" class="dialog-extra"></div><div class="dialog-footer"><button id="editor-delete" class="text-button danger" type="button" hidden>Delete</button><span></span><button id="cancel-editor" class="button" type="button">Cancel</button><button id="editor-submit" class="button primary" type="submit">Save</button></div></form></dialog>
+<dialog id="viewer" aria-label="Image viewer"><div class="viewer-header"><div><strong id="viewer-title"></strong><small id="viewer-details"></small></div><button id="viewer-zoom" class="viewer-button" aria-pressed="false">Actual size</button><a id="viewer-original" class="viewer-button" target="_blank" rel="noopener">Open original ↗</a><a id="viewer-download" class="viewer-button" download>↓</a><button id="viewer-close" class="viewer-button" aria-label="Close image viewer">×</button></div><div id="viewer-stage"><img id="viewer-image" alt=""></div><div class="viewer-footer"><button id="viewer-prev" class="viewer-button" aria-label="Previous image">←</button><span id="viewer-position"></span><button id="viewer-next" class="viewer-button" aria-label="Next image">→</button></div></dialog>
+<input id="image-files" type="file" accept="image/*" multiple hidden><input id="backup-file" type="file" accept=".json,application/json" hidden>
+<script id="portable-data" type="application/json">null</script>
+<script>/* APP_SCRIPT */</script>
+</body>
+</html>
