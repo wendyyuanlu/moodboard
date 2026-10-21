@@ -358,6 +358,7 @@ test("responsive layout has no page overflow and paste does not hijack text inpu
   }
   await page.locator("button[data-layout=masonry]").click();
   await expect(page.locator(".images")).toHaveAttribute("data-layout", "masonry");
+  await expect.poll(() => page.locator(".image-card").evaluateAll((cards) => new Set(cards.map((card) => Math.round(card.getBoundingClientRect().x))).size)).toBe(4);
   await page.screenshot({ path: testInfo.outputPath("desktop.png"), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: testInfo.outputPath("mobile.png"), fullPage: true });
