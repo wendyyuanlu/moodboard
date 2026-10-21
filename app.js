@@ -7,14 +7,19 @@
   const editor = $("#editor");
   const viewer = $("#viewer");
   let state, db, assets = new Map(), urls = new Map();
-  let editable = true, selection = new Set(), cursor = null, editorAction, editorDelete;
+  let editable = true, selection = new Set(), cursor = null, editorAction, editorDelete, editorSuccess;
   let queue = Promise.resolve(), pending = 0, memoryOnly = false, dirty = false;
   let noticeTimer, viewItems = [], viewIndex = 0, internalClipboard = [];
   let suppressClickUntil = 0, gesture = null, dragFrame = 0, selectedTarget = null;
   let masonryFrame = 0;
   const masonryObserver = new ResizeObserver(() => scheduleMasonry());
   let channel;
-  const supportedImage = /^image\/(png|jpeg|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)$/i;
+  const { supportedImage, sourcePageURL, validCrop, validate } = MoodboardFormat;
+  const cloudConfig = JSON.parse($("#cloud-config").textContent);
+  const cloudEnabled = Boolean(cloudConfig && location.protocol !== "file:" && location.origin === new URL(cloudConfig.site).origin && location.pathname.startsWith(new URL(cloudConfig.site).pathname));
+  const github = cloudEnabled ? MoodboardGitHub.createGitHubStore(cloudConfig) : null;
+  let cloudInfo = { collection: cloudConfig?.collection, revision: null, dirty: false };
+  let cloudReady = false, cloudSaving = false, cloudConflict = false, cloudError = "", cloudTimer;
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -54,12 +59,14 @@
   function sizeText(size) {
     return size < 1024 * 1024 ? `${Math.round(size / 1024)} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`;
   }
-  function sourcePageURL(value) {
-    if (typeof value !== "string" || value.length > 8192) return "";
-    try {
-      const url = new URL(value.trim());
-      return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : "";
-    } catch { return ""; }
+  function sourceLink(item, className) {
+    const sourceUrl = sourcePageURL(item.sourceUrl);
+    if (!sourceUrl) return null;
+    const link = el("a", className);
+    link.href = sourceUrl; link.target = "_blank"; link.rel = "noopener noreferrer";
+    link.setAttribute("aria-label", `Open source page for ${item.title}`); link.title = "Open source page";
+    link.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 13 4-4M8 16l-1 1a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0M16 8l1-1a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0"/></svg>';
+    return link;
   }
   function clipboardSourcePage(html) {
     const header = html.match(/(?:^|[\r\n])SourceURL:\s*([^\r\n]+)/i);
@@ -74,35 +81,8 @@
   }
   function initialState() {
     const tabId = uid();
-    return { schema: 1, id: uid(), revision: 0, activeTab: tabId, settings: { layout: "masonry", zoom: matchMedia("(max-width: 600px)").matches ? 150 : 220, theme: "light", accent: "#637554" },
+    return { schema: 1, id: uid(), revision: 0, activeTab: tabId, settings: { layout: "masonry", zoom: matchMedia("(max-width: 600px)").matches ? 150 : 220, theme: "light", accent: "#637554", showCaptions: true, showFilenames: false, showUrls: true },
       tabs: [{ id: tabId, name: "My inspiration", sections: [{ id: uid(), name: "The little things", collapsed: false, items: [] }] }] };
-  }
-  function validate(data, assetMap) {
-    const fail = () => { throw new Error("This moodboard file is invalid or incomplete. Your current board has not been replaced."); };
-    const text = (value, max, required = false) => typeof value === "string" && value.length <= max && (!required || value.trim().length > 0);
-    if (!data || data.schema !== 1 || !text(data.id, 150, true) || !Number.isSafeInteger(data.revision) || data.revision < 0 || !Array.isArray(data.tabs) || !data.tabs.length) fail();
-    const ids = new Set();
-    const unique = (id) => { if (!text(id, 150, true) || ids.has(id)) fail(); ids.add(id); };
-    for (const tab of data.tabs) {
-      if (!tab || !text(tab.name, 150, true) || !Array.isArray(tab.sections)) fail();
-      unique(tab.id);
-      for (const section of tab.sections) {
-        if (!section || !text(section.name, 150, true) || typeof section.collapsed !== "boolean" || !Array.isArray(section.items)) fail();
-        unique(section.id);
-        for (const item of section.items) {
-          if (!item || !text(item.title, 300, true) || !text(item.notes, 10000) || !assetMap.has(item.assetId)) fail();
-          if (item.sourceUrl !== undefined && (!text(item.sourceUrl, 8192) || (item.sourceUrl !== "" && !sourcePageURL(item.sourceUrl)))) fail();
-          unique(item.id);
-        }
-      }
-    }
-    if (!data.tabs.some((tab) => tab.id === data.activeTab)) fail();
-    const settings = data.settings;
-    if (!settings || !["masonry", "grid", "list"].includes(settings.layout) || !["light", "dark"].includes(settings.theme) || !/^#[a-f0-9]{6}$/i.test(settings.accent) || !Number.isFinite(settings.zoom) || settings.zoom < 100 || settings.zoom > 420) fail();
-    for (const [key, asset] of assetMap) {
-      if (!text(key, 150, true) || !asset || !(asset.blob instanceof Blob) || !supportedImage.test(asset.blob.type) || !text(asset.name, 500, true) || !Number.isInteger(asset.width) || asset.width <= 0 || !Number.isInteger(asset.height) || asset.height <= 0) fail();
-    }
-    return data;
   }
   function openDB() {
     return new Promise((resolve, reject) => {
@@ -123,7 +103,7 @@
       request.onerror = () => reject(new Error("Could not read your saved moodboard. Export before clearing browser storage."));
     });
   }
-  function persist(next, nextAssets, expectedRevision) {
+  function persist(next, nextAssets, expectedRevision, syncMeta) {
     if (!db || memoryOnly) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(["boards", "meta"], "readwrite");
@@ -136,6 +116,7 @@
         }
         store.put({ state: next, assets: [...nextAssets] }, next.id);
         tx.objectStore("meta").put(next.id, "active");
+        if (syncMeta) tx.objectStore("meta").put(syncMeta, `cloud:${next.id}`);
       };
       tx.oncomplete = resolve;
       tx.onabort = () => reject(new Error(conflict
@@ -145,8 +126,15 @@
     });
   }
   function setSaveStatus() {
-    $("#save-status").textContent = pending ? "Saving…" : memoryOnly ? "Export to keep changes" : "Saved on this device";
-    $("#save-portable").disabled = pending > 0 || !state;
+    let status = memoryOnly ? "Export to keep changes" : "Saved on this device";
+    if (cloudEnabled) {
+      status = cloudConflict ? "Save conflict · kept on device" : cloudSaving ? "Saving to GitHub…"
+        : cloudError ? cloudInfo.revision || allItems().length ? "Saved here · GitHub unavailable" : "Could not load GitHub board" : !cloudReady ? "Connecting to shared board…"
+        : cloudInfo.dirty ? github.connected ? "Saved here · waiting for GitHub" : "Saved here · connect GitHub" : "Saved to GitHub";
+      if (memoryOnly && cloudInfo.dirty) status = "In memory · export a backup";
+    }
+    $("#save-status").textContent = pending ? "Saving…" : status;
+    $("#save-portable").disabled = pending > 0 || !state || Boolean(cloudEnabled && !cloudReady && !cloudInfo.revision && !allItems().length);
   }
   function enqueue(action) {
     pending++; setSaveStatus();
@@ -162,8 +150,9 @@
     const used = new Set(allItems(next).map((item) => item.assetId));
     for (const key of nextAssets.keys()) if (!used.has(key)) nextAssets.delete(key);
     validate(next, nextAssets);
-    await persist(next, nextAssets, state.revision);
+    await persist(next, nextAssets, state.revision, cloudEnabled ? { ...cloudInfo, dirty: true } : undefined);
     state = next; assets = nextAssets; dirty = true;
+    if (cloudEnabled) { cloudInfo.dirty = true; scheduleCloud(); }
     for (const [key, url] of urls) if (!assets.has(key)) { URL.revokeObjectURL(url); urls.delete(key); }
     selection = new Set([...selection].filter((id) => tabItems().some((item) => item.id === id)));
     if (cursor && !activeTab().sections.some((section) => section.id === cursor.sectionId)) cursor = null;
@@ -354,22 +343,45 @@
       } else openViewer(item.id);
     }, "image-hit");
     hit.setAttribute("aria-label", `Open original image: ${item.title}`);
-    const img = el("img"); img.src = imageURL(item.assetId); img.alt = item.title; img.loading = "lazy"; img.decoding = "async"; img.draggable = false;
-    img.width = asset.width; img.height = asset.height;
+    let img;
+    if (item.crop) {
+      const svg = (name) => document.createElementNS("http://www.w3.org/2000/svg", name);
+      const { x, y, width, height } = item.crop;
+      const rect = { x: x * asset.width, y: y * asset.height, width: width * asset.width, height: height * asset.height };
+      img = svg("svg"); img.classList.add("cropped-preview"); img.setAttribute("role", "img"); img.setAttribute("aria-label", item.title);
+      img.setAttribute("viewBox", `${rect.x} ${rect.y} ${rect.width} ${rect.height}`);
+      img.setAttribute("width", rect.width); img.setAttribute("height", rect.height);
+      // The nested viewport clips the original even in letterboxed Grid/List views.
+      const viewport = svg("svg");
+      for (const [key, value] of Object.entries(rect)) viewport.setAttribute(key, value);
+      viewport.setAttribute("viewBox", `${rect.x} ${rect.y} ${rect.width} ${rect.height}`);
+      viewport.setAttribute("overflow", "hidden");
+      const original = svg("image");
+      original.setAttribute("href", imageURL(item.assetId)); original.setAttribute("width", asset.width); original.setAttribute("height", asset.height);
+      viewport.append(original); img.append(viewport);
+      original.addEventListener("error", () => notify(`Could not display the crop of “${item.title}”. Open the original or reset its crop.`), { once: true });
+    } else {
+      img = el("img"); img.src = imageURL(item.assetId); img.alt = item.title; img.loading = "lazy"; img.decoding = "async"; img.draggable = false;
+      img.width = asset.width; img.height = asset.height;
+    }
     img.addEventListener("error", () => notify(`Could not display “${item.title}”. The original is still available in your backup.`), { once: true });
-    const caption = el("div", "card-caption"); caption.append(el("h3", "", item.title));
+    const caption = el("div", "card-caption"), filename = el("h3", "", item.title);
+    filename.hidden = !(state.settings.showFilenames ?? false); caption.append(filename);
     if (item.notes) caption.append(el("p", "", item.notes));
     caption.append(el("small", "card-meta", `${asset.width} × ${asset.height} · ${sizeText(asset.blob.size)}`));
     const sourceUrl = sourcePageURL(item.sourceUrl);
     if (sourceUrl) {
       const link = el("a", "source-link", sourceUrl);
       link.href = sourceUrl; link.target = "_blank"; link.rel = "noopener noreferrer";
+      link.hidden = state.settings.showUrls === false;
       caption.append(link);
-    } else caption.append(el("span", "source-missing", "No source URL available"));
+    }
+    caption.hidden = state.settings.showCaptions === false || (filename.hidden && (!sourceUrl || state.settings.showUrls === false));
     hit.append(img);
     const check = el("input", "select-image"); check.type = "checkbox";
     check.setAttribute("aria-label", `Select ${item.title}`);
     check.addEventListener("change", () => { if (check.checked) selection.add(item.id); else selection.delete(item.id); renderSelection(); });
+    const checkArea = el("label", "image-selection"); checkArea.append(check);
     const tools = el("div", "card-tools");
     const drag = button("⠿", () => {
       if (performance.now() >= suppressClickUntil) { selection.add(item.id); renderSelection(); notify("Hold and drag to rearrange, or use Move to… below."); }
@@ -378,9 +390,15 @@
     const remove = button("×", () => { removeItems([item.id]).catch(report); }, "card-tool danger");
     remove.setAttribute("aria-label", `Delete image ${item.title}`);
     remove.title = "Delete image";
+    const crop = button("", () => openCrop(item.id), "card-tool");
+    crop.setAttribute("aria-label", `Crop image ${item.title}`); crop.title = "Crop image";
+    crop.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v15h15M3 6h15v15M10 6h8v8"/></svg>';
     const edit = button("···", () => openImage(item.id), "card-tool");
     edit.setAttribute("aria-label", `Edit image ${item.title}`);
-    tools.append(drag, remove, edit); card.append(hit, caption, check, tools); tile.append(card);
+    tools.append(drag, remove, crop);
+    const sourceButton = sourceLink(item, "card-tool source-button");
+    if (sourceButton) tools.append(sourceButton);
+    tools.append(edit); card.append(hit, caption, checkArea, tools); tile.append(card);
     return tile;
   }
   function switchTab(tabId) {
@@ -401,6 +419,8 @@
   }
   function hint(text) { $("#editor-fields").append(el("p", "hint", text)); }
   function openEditor(title, save, remove) {
+    editor.classList.remove("crop-editor");
+    editorSuccess = "Saved to your space.";
     editorAction = save; editorDelete = remove;
     $("#editor-form").reset(); $("#editor-fields").replaceChildren(); $("#editor-extra").replaceChildren();
     $("#editor-title").textContent = title; $("#editor-error").hidden = true;
@@ -502,6 +522,86 @@
   function sectionOptions() {
     return state.tabs.flatMap((tab) => tab.sections.map((section) => [section.id, `${tab.name} / ${section.name}`]));
   }
+  function openCrop(itemId) {
+    const item = allItems().find((entry) => entry.id === itemId);
+    const asset = assets.get(item.assetId);
+    let crop = clone(item.crop || { x: 0, y: 0, width: 1, height: 1 }), drag;
+    const fromFields = () => Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value === "" ? NaN : Number(input.value) / 100]));
+    const cropError = "Enter a non-empty crop inside the image: Left + Width and Top + Height must each be at most 100%.";
+    openEditor(`Crop ${item.title}`, async () => {
+      const saved = fromFields();
+      if (!validCrop(saved)) throw new Error(cropError);
+      await enqueue(() => commit((next) => {
+        const target = allItems(next).find((entry) => entry.id === itemId);
+        if (!target) throw new Error("This image is no longer in the collection.");
+        if (saved.x === 0 && saved.y === 0 && saved.width === 1 && saved.height === 1) delete target.crop;
+        else target.crop = saved;
+      }));
+    });
+    editor.classList.add("crop-editor");
+    hint("Drag on the original to draw a crop. Drag inside the frame to move it, or use its corners to resize. Only the board view changes; opening the image still shows the original.");
+    const stage = el("div", "crop-stage");
+    stage.style.aspectRatio = `${asset.width} / ${asset.height}`;
+    stage.style.width = `min(100%, ${50 * asset.width / asset.height}vh)`;
+    const original = el("img"); original.src = imageURL(item.assetId); original.alt = `Full original: ${item.title}`; original.draggable = false;
+    original.addEventListener("error", () => showEditorError(new Error("Could not load the original image. Cancel and try again.")), { once: true });
+    const frame = el("div", "crop-frame");
+    for (const corner of ["nw", "ne", "sw", "se"]) {
+      const handle = el("span", "crop-handle"); handle.dataset.corner = corner; handle.setAttribute("aria-hidden", "true"); frame.append(handle);
+    }
+    stage.append(original, frame); $("#editor-fields").append(stage);
+    const inputs = {};
+    for (const [key, label] of [["x", "Left (%)"], ["y", "Top (%)"], ["width", "Width (%)"], ["height", "Height (%)"]]) {
+      const input = field(label, `crop-${key}`, "", "number");
+      input.min = 0; input.max = 100; input.step = "any"; input.required = true; inputs[key] = input;
+      input.addEventListener("input", () => {
+        const next = fromFields();
+        $("#editor-error").hidden = Boolean(validCrop(next));
+        if (validCrop(next)) { crop = next; paint(false); }
+        else $("#editor-error").textContent = cropError;
+      });
+    }
+    function paint(updateFields = true) {
+      Object.assign(frame.style, { left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` });
+      if (updateFields) for (const [key, input] of Object.entries(inputs)) input.value = String(crop[key] * 100);
+    }
+    const point = (event) => {
+      const rect = stage.getBoundingClientRect();
+      return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) };
+    };
+    stage.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || drag) return;
+      event.preventDefault();
+      const start = point(event), corner = event.target.closest("[data-corner]")?.dataset.corner;
+      drag = { id: event.pointerId, start, crop: clone(crop), mode: corner || (event.target.closest(".crop-frame") ? "move" : "draw") };
+      stage.setPointerCapture(event.pointerId);
+    });
+    stage.addEventListener("pointermove", (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      const current = point(event), before = drag.crop;
+      if (drag.mode === "move") {
+        crop = { ...before, x: Math.max(0, Math.min(1 - before.width, before.x + current.x - drag.start.x)), y: Math.max(0, Math.min(1 - before.height, before.y + current.y - drag.start.y)) };
+      } else {
+        const anchor = drag.mode === "draw" ? drag.start : {
+          x: before.x + (drag.mode.includes("w") ? before.width : 0),
+          y: before.y + (drag.mode.includes("n") ? before.height : 0)
+        };
+        const width = Math.max(1 / asset.width, Math.abs(current.x - anchor.x));
+        const height = Math.max(1 / asset.height, Math.abs(current.y - anchor.y));
+        crop = { x: Math.min(1 - width, Math.min(anchor.x, current.x)), y: Math.min(1 - height, Math.min(anchor.y, current.y)), width, height };
+      }
+      $("#editor-error").hidden = true; paint();
+    });
+    const end = (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      if (event.type === "pointercancel") { crop = drag.crop; paint(); }
+      drag = null;
+      if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+    };
+    stage.addEventListener("pointerup", end); stage.addEventListener("pointercancel", end); stage.addEventListener("lostpointercapture", end);
+    $("#editor-extra").append(button("Reset crop", () => { crop = { x: 0, y: 0, width: 1, height: 1 }; $("#editor-error").hidden = true; paint(); }, "button"));
+    paint();
+  }
   function openImage(itemId) {
     const source = sections().find((section) => section.items.some((item) => item.id === itemId));
     const item = source.items.find((entry) => entry.id === itemId);
@@ -528,6 +628,8 @@
     });
     const asset = assets.get(item.assetId);
     hint(`Original: ${asset.width} × ${asset.height} pixels · ${sizeText(asset.blob.size)} · ${asset.blob.type}. Never resized or recompressed.`);
+    const sourceButton = sourceLink(item, "button source-button");
+    if (sourceButton) $("#editor-extra").append(sourceButton);
   }
   function transfer(data, ids, target, copy, replacements) {
     const wanted = new Set(ids);
@@ -766,15 +868,47 @@
     if (speed) window.scrollBy(0, speed);
     dragFrame = requestAnimationFrame(moveDrag);
   }
+  function startSelectionBox() {
+    if (!gesture || gesture.boxActive) return;
+    clearTimeout(gesture.timer);
+    gesture.box = gesture.boxActive = true;
+    gesture.capture = $("#sections");
+    gesture.capture.setPointerCapture(gesture.pointerId);
+    document.body.classList.add("selecting");
+    moveSelectionBox();
+  }
+  function moveSelectionBox() {
+    if (!gesture?.boxActive) return;
+    const speed = gesture.y < 50 ? -12 : gesture.y > innerHeight - 50 ? 12 : 0;
+    if (speed) window.scrollBy(0, speed);
+    const endX = gesture.x + scrollX, endY = gesture.y + scrollY;
+    const left = Math.min(gesture.anchorX, endX), top = Math.min(gesture.anchorY, endY);
+    const width = Math.abs(endX - gesture.anchorX), height = Math.abs(endY - gesture.anchorY);
+    const box = $("#rubber-band"); box.hidden = false;
+    Object.assign(box.style, { left: `${left - scrollX}px`, top: `${top - scrollY}px`, width: `${width}px`, height: `${height}px` });
+    selection = new Set(gesture.initial);
+    for (const card of $$(".image-card")) {
+      const rect = card.getBoundingClientRect();
+      if (!rect.width || !rect.height) continue;
+      const x = rect.left + scrollX, y = rect.top + scrollY;
+      if (x + rect.width >= left && x <= left + width && y + rect.height >= top && y <= top + height) selection.add(card.dataset.itemId);
+    }
+    renderSelection();
+    dragFrame = requestAnimationFrame(moveSelectionBox);
+  }
   function endGesture(cancelled = false) {
     if (!gesture) return;
     clearTimeout(gesture.timer); cancelAnimationFrame(dragFrame);
     const old = gesture, target = selectedTarget;
     gesture = null; selectedTarget = null;
-    old.capture?.releasePointerCapture?.(old.pointerId);
-    document.body.classList.remove("dragging");
+    if (old.capture?.hasPointerCapture(old.pointerId)) old.capture.releasePointerCapture(old.pointerId);
+    document.body.classList.remove("dragging", "selecting");
     for (const node of $$(".drag-source,.drop-target")) node.classList.remove("drag-source", "drop-target");
     $("#drag-preview").hidden = true; $("#rubber-band").hidden = true;
+    if (old.boxActive) {
+      suppressClickUntil = performance.now() + 500;
+      if (cancelled) { selection = old.previous; renderSelection(); }
+    }
     if (old.dragging) {
       suppressClickUntil = performance.now() + 500;
       if (!cancelled && target) {
@@ -785,36 +919,41 @@
   document.addEventListener("pointerdown", () => {
     if (!gesture?.dragging) suppressClickUntil = 0;
   }, true);
+  document.addEventListener("click", (event) => {
+    if (performance.now() < suppressClickUntil && event.target.closest("#sections")) {
+      event.preventDefault(); event.stopImmediatePropagation();
+    }
+  }, true);
   $("#sections").addEventListener("pointerdown", (event) => {
     if (!editable || event.button !== 0 || editor.open || viewer.open || pending) return;
     const card = event.target.closest(".image-card");
-    if (card && (event.target.closest(".image-hit") || event.target.closest(".drag-handle"))) {
+    const fromCheckbox = Boolean(event.target.closest(".image-selection"));
+    const origin = { pointerId: event.pointerId, pointerType: event.pointerType, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY,
+      anchorX: event.clientX + scrollX, anchorY: event.clientY + scrollY, previous: new Set(selection),
+      initial: event.ctrlKey || event.metaKey || event.shiftKey ? new Set(selection) : new Set() };
+    if (card && (event.target.closest(".image-hit") || event.target.closest(".drag-handle") || fromCheckbox)) {
+      if (fromCheckbox && event.pointerType !== "mouse") return;
       const handle = event.target.closest(".drag-handle");
-      gesture = { itemId: card.dataset.itemId, pointerId: event.pointerId, capture: handle || $(".image-hit", card), x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, dragging: false };
-      gesture.timer = setTimeout(startDrag, handle ? 120 : 420);
+      gesture = { ...origin, itemId: card.dataset.itemId, capture: handle || $(".image-hit", card), handle: Boolean(handle), dragging: false };
+      if (!fromCheckbox) gesture.timer = setTimeout(startDrag, handle ? 120 : 420);
       return;
     }
     if (event.pointerType !== "mouse" || event.target.closest("button,input,a,.image-card")) return;
     event.preventDefault();
-    gesture = { box: true, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY, initial: event.ctrlKey || event.metaKey || event.shiftKey ? new Set(selection) : new Set() };
+    gesture = { ...origin, box: true };
   });
   document.addEventListener("pointermove", (event) => {
     if (!gesture || gesture.pointerId !== event.pointerId) return;
     gesture.x = event.clientX; gesture.y = event.clientY;
     if (gesture.box) {
-      const x = Math.min(gesture.startX, gesture.x), y = Math.min(gesture.startY, gesture.y);
-      const w = Math.abs(gesture.x - gesture.startX), h = Math.abs(gesture.y - gesture.startY);
-      const box = $("#rubber-band"); box.hidden = false;
-      Object.assign(box.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
-      selection = new Set(gesture.initial);
-      for (const card of $$(".image-card")) {
-        const rect = card.getBoundingClientRect();
-        if (rect.right >= x && rect.left <= x + w && rect.bottom >= y && rect.top <= y + h) selection.add(card.dataset.itemId);
-      }
-      renderSelection(); return;
+      if (Math.hypot(gesture.x - gesture.startX, gesture.y - gesture.startY) > 6) startSelectionBox();
+      if (gesture.boxActive) event.preventDefault();
+      return;
     }
-    if (!gesture.dragging && Math.hypot(gesture.x - gesture.startX, gesture.y - gesture.startY) > 10) {
-      clearTimeout(gesture.timer); gesture = null;
+    if (!gesture.dragging && Math.hypot(gesture.x - gesture.startX, gesture.y - gesture.startY) > (gesture.pointerType === "mouse" ? 6 : 10)) {
+      if (gesture.handle) startDrag();
+      else if (gesture.pointerType === "mouse") { startSelectionBox(); event.preventDefault(); }
+      else { clearTimeout(gesture.timer); gesture = null; }
     } else if (gesture.dragging) event.preventDefault();
   }, { passive: false });
   document.addEventListener("pointerup", () => endGesture());
@@ -843,6 +982,7 @@
   async function packageBoard() {
     const data = { format: "moodboard", version: 1, state: clone(state), assets: [] };
     const snapshot = new Map(assets);
+    validate(data.state, snapshot);
     for (const [id, asset] of snapshot) {
       data.assets.push([id, { name: asset.name, width: asset.width, height: asset.height, data: await blobToDataURL(asset.blob) }]);
     }
@@ -866,6 +1006,144 @@
     validate(data.state, result);
     return { state: data.state, assets: result };
   }
+  function scheduleCloud(delay = 1200) {
+    if (!cloudEnabled) return;
+    clearTimeout(cloudTimer); cloudTimer = setTimeout(syncCloud, delay);
+  }
+  async function saveCloudMeta() {
+    if (!db || memoryOnly) return;
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("meta", "readwrite");
+      tx.objectStore("meta").put(clone(cloudInfo), `cloud:${state.id}`);
+      tx.oncomplete = resolve;
+      tx.onabort = tx.onerror = () => reject(new Error("Could not save the GitHub outbox status. Export a backup before closing."));
+    });
+  }
+  async function cloudRequest(method = "GET", body, conditional = false) {
+    const data = method === "GET" ? await github.read(conditional ? cloudInfo.revision : undefined) : await github.write(body.expectedRevision, body.board);
+    if (data === null) return null;
+    if (!(data.revision === null || typeof data.revision === "string" && /^[a-f0-9]{40}$/.test(data.revision))) throw new Error("The save service returned an invalid revision.");
+    return data;
+  }
+  async function installShared(record, merge = false) {
+    const imported = await unpackBoard(record.board);
+    const next = clone(imported.state), nextAssets = new Map(imported.assets);
+    if (merge) {
+      const assetIds = new Map();
+      for (const [id, asset] of assets) {
+        const newId = nextAssets.has(id) ? uid() : id;
+        assetIds.set(id, newId); nextAssets.set(newId, asset);
+      }
+      for (const tab of clone(state.tabs)) {
+        const oldId = tab.id; tab.id = uid();
+        if (oldId === state.activeTab) next.activeTab = tab.id;
+        for (const section of tab.sections) {
+          section.id = uid();
+          for (const item of section.items) { item.id = uid(); item.assetId = assetIds.get(item.assetId); }
+        }
+        next.tabs.push(tab);
+      }
+      next.revision = Math.max(next.revision, state.revision) + 1;
+    }
+    validate(next, nextAssets);
+    const existing = db ? await readDB("boards", next.id) : null;
+    const info = { collection: cloudConfig.collection, revision: record.revision, dirty: merge };
+    await persist(next, nextAssets, next.id === state.id ? state.revision : existing?.state.revision ?? -1, info);
+    for (const url of urls.values()) URL.revokeObjectURL(url);
+    urls.clear(); state = next; assets = nextAssets; cloudInfo = info;
+    selection.clear(); cursor = null; internalClipboard = []; cloudConflict = false;
+    render(); channel?.postMessage({ id: state.id, revision: state.revision });
+    if (merge) notify("This device's existing images were added to the public board without removing shared images.");
+  }
+  async function syncCloud() {
+    if (!cloudEnabled || !state || cloudSaving || cloudConflict) return;
+    if (editor.open || viewer.open || gesture) { scheduleCloud(1500); return; }
+    if (!navigator.onLine) { cloudError = "Offline. Changes are queued on this device."; setSaveStatus(); return; }
+    cloudSaving = true; setSaveStatus();
+    try {
+      await queue;
+      if (!cloudReady || !cloudInfo.dirty) {
+        const record = await cloudRequest("GET", undefined, Boolean(cloudInfo.revision));
+        let deferred = false;
+        await enqueue(async () => {
+          if (editor.open || viewer.open || gesture) { deferred = true; return; }
+          if (record) {
+            if (record.board === null && record.revision === null) {
+              cloudInfo.revision = null; cloudInfo.dirty = true; await saveCloudMeta();
+            } else if (!record.board || !record.revision) throw new Error("The shared board response is incomplete.");
+            else if (!cloudInfo.revision && state.id !== record.board.state.id && allItems().length) {
+              await installShared(record, true);
+            } else if (!cloudInfo.revision && allItems().length && JSON.stringify(await packageBoard()) !== JSON.stringify(record.board)) {
+              const error = new Error("This device has an existing local version. Merge it with the shared board in Settings, or export it before loading the shared version.");
+              error.conflict = true; throw error;
+            } else if (cloudInfo.dirty) {
+              if (cloudInfo.revision !== record.revision) {
+                if (JSON.stringify(await packageBoard()) === JSON.stringify(record.board)) await installShared(record);
+                else { const error = new Error("A newer shared save exists. Resolve the conflict in Settings; your local changes are safe."); error.conflict = true; throw error; }
+              }
+            } else if (cloudInfo.revision !== record.revision || state.id !== record.board.state.id) await installShared(record);
+          }
+          cloudReady = true; cloudError = "";
+        });
+        if (deferred) { scheduleCloud(1500); return; }
+      }
+      if (cloudInfo.dirty) {
+        if (!github.connected) { cloudError = ""; cloudReady = true; return; }
+        await queue;
+        const board = await packageBoard(), sentId = board.state.id, sentRevision = board.state.revision;
+        const saved = await cloudRequest("PUT", { expectedRevision: cloudInfo.revision, board });
+        await enqueue(async () => {
+          cloudInfo.revision = saved.revision;
+          cloudInfo.dirty = state.id !== sentId || state.revision !== sentRevision;
+          await saveCloudMeta();
+        });
+      }
+      cloudError = ""; cloudReady = true;
+    } catch (error) {
+      if (error.authentication) github.disconnect();
+      cloudConflict = Boolean(error.conflict);
+      if (cloudError !== errorMessage(error)) {
+        console.error(error);
+        notify(`${cloudConflict ? "Shared save conflict" : "GitHub saving unavailable"}: ${errorMessage(error)} Your changes remain on this device.`);
+      }
+      cloudError = errorMessage(error);
+    } finally {
+      cloudSaving = false; setSaveStatus();
+      if (cloudInfo.dirty && !cloudConflict && github.connected) scheduleCloud(cloudError ? 30000 : 1200);
+    }
+  }
+  async function resolveShared(mode) {
+    if (cloudSaving) { notify("A GitHub save is in progress. Try again when it finishes."); return; }
+    if (mode === "replace" && !confirm("Replace the public GitHub board with this device's version? This can remove other people's edits. Export a backup first.")) return;
+    if (mode === "load" && cloudInfo.dirty && !confirm("Discard this device's pending changes and load the shared board? Export a backup first.")) return;
+    cloudSaving = true; setSaveStatus();
+    try {
+      const record = await cloudRequest();
+      await enqueue(async () => {
+        if (mode === "replace") { cloudInfo.revision = record.revision; cloudInfo.dirty = true; await saveCloudMeta(); }
+        else if (record.board) await installShared(record, mode === "merge");
+        else throw new Error("There is no shared board to load.");
+      });
+      cloudConflict = false; cloudError = ""; cloudReady = true; editor.close();
+    } catch (error) { showEditorError(error); }
+    finally { cloudSaving = false; setSaveStatus(); }
+    if (!cloudConflict) scheduleCloud(0);
+  }
+  function connectGitHub() {
+    openEditor("Connect GitHub", async (form) => {
+      await github.connect(form.get("githubToken"));
+      cloudReady = false; cloudError = ""; scheduleCloud(0);
+    });
+    editorSuccess = "Connected to GitHub. Pending edits will upload automatically.";
+    hint("Sign in to GitHub and create a fine-grained access token restricted to the moodboard repository, with Contents: Read and write. This is GitHub token authentication, not a separate moodboard account.");
+    const setup = el("a", "button");
+    setup.href = `https://github.com/settings/personal-access-tokens/new?name=Moodboard&target_name=${encodeURIComponent(cloudConfig.owner)}&contents=write&expires_in=30`;
+    setup.target = "_blank"; setup.rel = "noopener noreferrer"; setup.textContent = "Open GitHub sign-in and token setup";
+    $("#editor-fields").append(setup);
+    const input = field("Repository-scoped GitHub token", "githubToken", "", "password");
+    input.required = true; input.autocomplete = "off"; input.spellcheck = false;
+    hint("The token is kept only in this open tab and sent only to api.github.com. It is never stored in a backup, portable HTML, browser storage, or your repository. Reconnect after reloading if you want to upload more edits; public browsing needs no token.");
+  }
   function download(blob, name) {
     const url = URL.createObjectURL(blob), link = el("a");
     link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
@@ -882,6 +1160,7 @@
       const find = (selector) => html.querySelector(selector);
       for (const manifest of html.querySelectorAll("link[rel=manifest]")) manifest.remove();
       find("#portable-data").textContent = JSON.stringify(data).replace(/</g, "\\u003c");
+      find("#cloud-config").textContent = "null";
       for (const selector of ["#sections", "#tabs", "#editor-fields", "#editor-extra"]) find(selector).replaceChildren();
       for (const node of html.querySelectorAll("dialog")) node.removeAttribute("open");
       for (const selector of ["#notice", "#selection-bar", "#drag-preview", "#rubber-band", "#storage-warning", "#editor-error"]) find(selector).hidden = true;
@@ -909,13 +1188,16 @@
   function guide() {
     openEditor("Take your inspiration anywhere", null);
     const paragraphs = [
-      ["Add quickly", "Press Ctrl+V / ⌘V anywhere outside a text field. Choose a “Paste here” gap first, or append at the bottom. Consecutive pastes keep their order. On mobile, try Paste or use Add images for your photo library."],
+      ["Add quickly", "Press Ctrl+V / ⌘V anywhere outside a text field. Choose a “Paste here” gap first. The paste toolbar is hidden; Paste images and Append at bottom are in Settings and backups. Use the header image-plus icon for your photo library. Consecutive pastes keep their order."],
       ["Source pages", "When the clipboard includes an explicit source-page URL or canonical page metadata, it is saved with the image. Image URLs are not mistaken for page URLs. Screenshots and most copied images omit the page address; add or correct it in the image’s details menu. Source page opens that link from the viewer. Links stay in offline saves and backups, but opening the source website requires internet."],
-      ["Organize", "Use checkboxes to select, Shift-click for a range, or drag a rectangle from empty space on desktop. Hold an image to drag it; on phones the dotted grip is the most reliable drag target. Drop above/below another image or into a section. Hover a tab while dragging to switch tabs. Move to… provides an accessible alternative."],
+      ["Captions", "Settings and backups starts with Caption switches for the entire caption, filenames, and URLs. Save to apply. Missing URLs have no placeholder text. Images with a source page also have a link icon on their hover controls and in their details menu, even if captions are hidden."],
+      ["Organize", "Grid and List always show selection checkboxes while editing. On desktop, quickly drag from an image, checkbox, or empty space to select a rectangle; hold Ctrl/Command/Shift to add to the selection. All selects the current tab; the section icon expands selection to every represented section. Hold an image to rearrange it instead; on phones use its dotted grip. Move provides an accessible alternative."],
+      ["Crop without losing originals", "Use an image's crop icon. The editor always shows the full original: draw a crop, move its frame, resize its corners, or enter percentages. Reset crop restores the full view; Cancel discards changes. Crops only affect the board, never original downloads or the full-image viewer, and are included in backups and portable copies."],
       ["Tabs & sections", "Double-click a tab to rename, reposition, duplicate, or delete it. You can also focus it and press F2, or touch and hold it on a phone. Editing must be on. Use a section’s dots menu to organize that section."],
       ["Save to computer or USB", "Save portable copy downloads a single HTML file containing the app, every original image, and your organization. Open it on a computer without internet. It is a snapshot: after editing, save a NEW portable copy. The app cannot silently rewrite files on your USB."],
       ["On your phone", "For reliable phone use, open the hosted HTTPS site while online, then use your browser’s Add to Home Screen / Install option and import a JSON backup. Open it once to finish caching before going offline. Mobile Files apps may only preview local HTML rather than run it; portable HTML is not a guaranteed phone installation method."],
-      ["Offline & storage", "There are no external fonts, images, or runtime libraries. Uploaded/pasted image bytes are never resized or compressed. Browser storage stays on this device and can be cleared by the browser, so keep backups. Copies do not synchronize automatically. Private browsing may discard storage. Very large collections require substantial device memory during export."],
+      ["GitHub autosave", "The published board is publicly viewable. To upload changes, use Settings and backups → Connect GitHub with a fine-grained token restricted to the moodboard repository and Contents: Read and write. The token lives only in this open tab and is sent only to GitHub; reconnect after a reload. Changes upload automatically, including removal of an original file when its last placement is deleted. Earlier copies remain in Git history. Conflicts keep your local changes until you resolve them in Settings."],
+      ["Offline & storage", "Original bytes are never resized or compressed. The shared site caches full originals and queues offline changes in this browser. Private browsing may discard storage, so keep backups. Save portable copy embeds ALL originals from ALL tabs and sections, including collapsed sections and the uncropped originals, plus organization and metadata. It needs no internet, GitHub login, or companion files. Portable copies contain no token and do not automatically publish; import their JSON backup on the hosted site to bring edits back. Large collections require substantial memory during export."],
       ["Selection & editing", "Editing is on by default each time the app opens. Use the pencil beside Masonry/Grid/List to toggle editing. Turning it off protects against accidental changes. Click an image to open the original-resolution viewer. Use arrows or swipe to browse; Actual size allows panning. Copy to… duplicates images between sections/tabs; Ctrl+C / ⌘C and paste also work within the open app."],
       ["Before your flight", "Import or paste your images, save a portable copy AND a JSON backup, then test the app in airplane mode on the device you’ll use. An offline installation is ready only when the status says “Offline ready”."]
     ];
@@ -926,20 +1208,37 @@
   function settings() {
     openEditor("Make yourself at home", async (form) => {
       await enqueue(() => commit((next) => {
-        next.settings.accent = form.get("accent"); next.settings.theme = form.get("theme");
+        next.settings.accent = form.get("accent");
+        for (const key of ["showCaptions", "showFilenames", "showUrls"]) next.settings[key] = form.has(key);
       }));
     });
-    field("Accent color", "accent", state.settings.accent, "color");
-    field("Appearance", "theme", state.settings.theme, "text", [["light", "Warm & light"], ["dark", "After hours"]]);
+    $("#editor-fields").append(el("h3", "guide-heading", "Caption"));
+    for (const [key, label, fallback] of [["showCaptions", "Show captions", true], ["showFilenames", "Show filenames", false], ["showUrls", "Show URLs", true]]) {
+      const input = field(label, key, "on", "checkbox");
+      input.checked = state.settings[key] ?? fallback; input.setAttribute("role", "switch"); input.closest(".field").classList.add("caption-toggle");
+    }
+    if (cloudEnabled) {
+      $("#editor-fields").append(el("h3", "guide-heading", "Shared GitHub board"));
+      hint("Anyone can view. Connect GitHub with repository write access to upload edits automatically. Originals and organization are saved to the board branch; deletions remain in Git history. Offline edits wait on this device. No separate server or tunnel is required.");
+      hint(cloudConflict ? "A newer shared version conflicts with this device. Export a backup, then choose how to resolve it." : $("#save-status").textContent);
+      $("#editor-extra").append(button(github.connected ? "Reconnect GitHub" : "Connect GitHub", connectGitHub, "button"),
+        button("Retry GitHub save", () => { editor.close(); scheduleCloud(0); }, "button"),
+        button("Merge local and shared boards", () => resolveShared("merge"), "button"),
+        button("Load shared version", () => resolveShared("load"), "button"),
+        button("Replace shared with this device", () => resolveShared("replace"), "button"));
+      if (github.connected) $("#editor-extra").append(button("Disconnect GitHub", () => { github.disconnect(); editor.close(); setSaveStatus(); }, "button"));
+    }
     const total = [...assets.values()].reduce((sum, asset) => sum + asset.blob.size, 0);
     hint(`${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)}. Local autosave is not a backup; export a copy regularly.`);
-    $("#editor-extra").append(button("Export JSON backup", exportJSON, "button"), button("Import JSON backup", () => $("#backup-file").click(), "button"), button("Offline & portability guide", guide, "button"));
+    $("#editor-extra").append(button("Paste images", () => { editor.close(); pasteFromButton(); }, "button"), button("Append at bottom", () => { editor.close(); appendAtBottom(); }, "button"), button("Export JSON backup", exportJSON, "button"), button("Import JSON backup", () => $("#backup-file").click(), "button"), button("Offline & portability guide", guide, "button"));
     if (navigator.storage?.persist) $("#editor-extra").append(button("Protect browser storage", async () => {
       try {
         const granted = await navigator.storage.persist();
         notify(granted ? "Persistent storage granted. Still keep a portable backup." : "Your browser did not grant persistent storage. Export backups regularly.");
       } catch (error) { report(error); }
     }, "button"));
+    const accent = field("Accent color", "accent", state.settings.accent, "color");
+    $("#editor-extra").append(accent.closest(".field"));
   }
   $("#backup-file").addEventListener("change", async (event) => {
     const file = event.target.files[0]; event.target.value = "";
@@ -947,13 +1246,14 @@
     try {
       const raw = JSON.parse(await file.text());
       const imported = await unpackBoard(raw);
-      if (!confirm("Replace this open collection with the backup? Export your current board first if you want to keep a copy.")) return;
+      if (!confirm(`Replace this open collection with the backup? ${cloudEnabled ? "This will also replace the public GitHub board. " : ""}Export your current board first if you want to keep a copy.`)) return;
       await enqueue(async () => {
         const next = clone(imported.state); next.id = uid(); next.revision = 0;
-        await persist(next, imported.assets, -1);
+        await persist(next, imported.assets, -1, cloudEnabled ? { ...cloudInfo, dirty: true } : undefined);
         for (const url of urls.values()) URL.revokeObjectURL(url);
         urls.clear(); state = next; assets = imported.assets;
         selection.clear(); cursor = null; internalClipboard = []; dirty = true;
+        if (cloudEnabled) { cloudInfo.dirty = true; scheduleCloud(); }
         render();
       });
       editor.close(); notify("Backup imported. All images are available offline.");
@@ -966,7 +1266,7 @@
     const controls = $$("button", editor);
     controls.forEach((control) => { control.disabled = true; });
     $("#editor-error").hidden = true;
-    try { await action(data); editor.close(); notify("Saved to your space."); }
+    try { await action(data); editor.close(); notify(editorSuccess); }
     catch (error) { showEditorError(error); }
     finally { controls.forEach((control) => { control.disabled = false; }); }
   });
@@ -987,7 +1287,8 @@
   $("#add-images").addEventListener("click", () => $("#image-files").click());
   $("#image-files").addEventListener("change", (event) => { addFiles(event.target.files); event.target.value = ""; });
   $("#paste-button").addEventListener("click", pasteFromButton);
-  $("#paste-bottom").addEventListener("click", () => { cursor = null; renderCursor(); notify("New images will be appended at the bottom of this tab."); });
+  function appendAtBottom() { cursor = null; renderCursor(); notify("New images will be appended at the bottom of this tab."); }
+  $("#paste-bottom").addEventListener("click", appendAtBottom);
   $("#edit-toggle").addEventListener("click", () => {
     editable = !editable; selection.clear(); endGesture(true); render();
   });
@@ -1000,6 +1301,11 @@
     const zoom = Number(event.target.value); mutate((next) => { next.settings.zoom = zoom; });
   });
   $("#select-all").addEventListener("click", () => { selection = new Set(tabItems().map((item) => item.id)); renderSelection(); });
+  $("#select-section").addEventListener("click", () => {
+    const selectedSections = activeTab().sections.filter((section) => section.items.some((item) => selection.has(item.id)));
+    selection = new Set(selectedSections.flatMap((section) => section.items.map((item) => item.id)));
+    renderSelection();
+  });
   $("#clear-selection").addEventListener("click", () => { selection.clear(); renderSelection(); });
   $("#copy-selected").addEventListener("click", () => openTransfer(true));
   $("#move-selected").addEventListener("click", () => openTransfer(false));
@@ -1012,7 +1318,10 @@
       return;
     }
     if (editor.open) return;
-    if (event.key === "Escape") { endGesture(true); selection.clear(); renderSelection(); }
+    if (event.key === "Escape") {
+      if (gesture) endGesture(true);
+      else { selection.clear(); renderSelection(); }
+    }
     if (!editable) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
       event.preventDefault(); selection = new Set(tabItems().map((item) => item.id)); renderSelection();
@@ -1071,7 +1380,18 @@
           if (event.data.id === state.id && event.data.revision > state.revision) warning("This collection was updated in another window. Export a backup if needed, then reload before editing.");
         };
       }
+      if (cloudEnabled && db) {
+        const stored = await readDB("meta", `cloud:${state.id}`);
+        if (stored?.collection === cloudConfig.collection) cloudInfo = stored;
+      }
       render(); setupOffline();
+      if (cloudEnabled) {
+        scheduleCloud(0);
+        addEventListener("online", () => scheduleCloud(0));
+        addEventListener("offline", () => { cloudError = "Offline. Changes are queued on this device."; setSaveStatus(); });
+        document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleCloud(0); });
+        setInterval(() => { if (!document.hidden) scheduleCloud(0); }, 30000);
+      }
     } catch (error) {
       console.error(error);
       warning(`Could not open this moodboard: ${errorMessage(error)}. Your stored board was not overwritten.`);
