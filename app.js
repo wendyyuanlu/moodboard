@@ -28,6 +28,8 @@
   let shellReady = false, cachingOriginals = false, originalCacheError = "";
   const originalDownloads = new Map();
   let originalDecoder = Promise.resolve(), originalReadbackFailed = false;
+  let clipboardCopying = false;
+  const clipboardMarker = "MOODBOARD_ORIGINALS_V1:";
   const cacheStorageReserve = 64 * 1024 * 1024;
   let cacheSpaceRequired = 0;
   const globeIcon = '<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>';
@@ -260,7 +262,7 @@
         link.addEventListener("click", (event) => { event.preventDefault(); if (navigator.onLine) connectGitHub(); });
         node.append(link);
       }
-      node.append(document.createTextNode(part));
+      node.append(node.id === "save-status" ? el("span", "status-text", part) : document.createTextNode(part));
     });
     updateGitHubControls();
   }
@@ -1132,8 +1134,86 @@
   function textTarget(target) {
     return target instanceof Element && Boolean(target.closest("input:not([type=checkbox]):not([type=range]), textarea, select, [contenteditable=true]"));
   }
+  function clipboardItems() {
+    return activeTab().sections.flatMap(section => sectionSelection.has(section.id) ? section.items : section.items.filter(item => selection.has(item.id)));
+  }
+  async function originalHash(blob) {
+    return [...new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+  async function clipboardPackage(items, sourceAssets) {
+    const snapshot = clone(state);
+    snapshot.tabs = [{ id: uid(), name: "Copied images", sections: [{ id: uid(), name: "Copied images", collapsed: false, items }] }];
+    snapshot.activeTab = snapshot.tabs[0].id;
+    const records = [];
+    for (const id of new Set(items.map(item => item.assetId))) {
+      const asset = await ensureOriginal(id, sourceAssets.get(id));
+      records.push([id, { name: asset.name, width: asset.width, height: asset.height,
+        sha256: await originalHash(asset.blob), data: await blobToDataURL(asset.blob) }]);
+    }
+    return clipboardMarker + JSON.stringify({ format: "moodboard", version: 1, state: snapshot, assets: records });
+  }
+  function copySelectedOriginals(event) {
+    const items = clone(clipboardItems());
+    if (!items.length) { notify("Select images or nonempty sections to copy."); return; }
+    internalClipboard = items;
+    if (event?.clipboardData) {
+      event.preventDefault(); event.clipboardData.setData("text/plain", "moodboard image selection");
+    }
+    if (clipboardCopying) { notify("Originals are still being prepared for the clipboard. Wait for Copied before pasting."); return; }
+    if (!navigator.clipboard?.write || typeof ClipboardItem !== "function") {
+      report(new Error("This browser cannot copy original files between boards. Copy to another section still works here; use Download selected originals for cross-file transfer."));
+      return;
+    }
+    clipboardCopying = true;
+    notify("Preparing originals and photo details for the clipboard. Wait for Copied before pasting.");
+    const sourceAssets = new Map(assets);
+    const text = clipboardPackage(items, sourceAssets);
+    // Promise-valued clipboard data keeps the original user gesture in browsers that require it.
+    const content = text.then(value => new Blob([value], { type: "text/plain" }));
+    content.catch(() => {});
+    let writing;
+    try { writing = navigator.clipboard.write([new ClipboardItem({ "text/plain": content })]); }
+    catch (error) { writing = Promise.reject(error); }
+    Promise.all([text, writing]).then(() => {
+      notify(`Copied ${items.length} images with original files, source links, notes, filenames and crops. Paste into another updated moodboard.`);
+    }).catch(error => {
+      report(new Error(`Could not copy originals to the clipboard: ${errorMessage(error)} Use Download selected originals if this browser blocks clipboard access.`));
+    }).finally(() => { clipboardCopying = false; });
+  }
+  function pasteOriginals(text, target) {
+    if (!text.startsWith(clipboardMarker)) return false;
+    if (!editable) { notify("Turn Edit on to paste images."); return true; }
+    enqueue(async () => {
+      let imported;
+      try {
+        imported = await unpackBoard(JSON.parse(text.slice(clipboardMarker.length)));
+        const known = new Map();
+        for (const [id, asset] of assets) {
+          const hash = asset.sha256 || asset.remote?.url.match(/\/images\/([a-f0-9]{64})-/)?.[1];
+          if (hash) known.set(hash, id);
+        }
+        const additions = new Map(), mapped = new Map();
+        for (const [id, asset] of imported.assets) {
+          if (!asset.sha256) throw new Error("The copied original is missing its integrity checksum. Copy it again from an updated moodboard.");
+          let existing = known.get(asset.sha256);
+          if (!existing && assets.get(id)?.blob instanceof Blob && await originalHash(assets.get(id).blob) === asset.sha256) existing = id;
+          const newId = existing || uid(); mapped.set(id, newId);
+          if (!existing || !(assets.get(existing)?.blob instanceof Blob) && !additions.has(existing)) additions.set(newId, { ...assets.get(existing), ...asset });
+          known.set(asset.sha256, newId);
+        }
+        const items = allItems(imported.state).map(item => ({ ...clone(item), id: uid(), assetId: mapped.get(item.assetId) }));
+        await commit(next => insertItems(next, items, target), additions);
+        notify(`Pasted ${items.length} images with original files and all photo details preserved.`);
+      } finally { await imported?.cleanup?.(); }
+    }).catch(() => {});
+    return true;
+  }
   document.addEventListener("paste", (event) => {
     if (!state || textTarget(event.target) || editor.open || viewer.open || deleteWarning.open) return;
+    const text = event.clipboardData?.getData("text/plain") || "";
+    if (text.startsWith(clipboardMarker)) {
+      event.preventDefault(); pasteOriginals(text, cursor && { ...cursor }); return;
+    }
     const files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
     if (files.length) {
       event.preventDefault();
@@ -1153,6 +1233,9 @@
     }
     try {
       const entries = await navigator.clipboard.read();
+      for (const entry of entries) if (entry.types.includes("text/plain")) {
+        if (pasteOriginals(await (await entry.getType("text/plain")).text(), target)) return;
+      }
       const images = [], pageSources = new Set(), imageSources = new Set();
       for (const entry of entries) {
         const html = entry.types.includes("text/html") ? await (await entry.getType("text/html")).text() : "";
@@ -1182,10 +1265,8 @@
     })).catch(() => {});
   }
   document.addEventListener("copy", (event) => {
-    if (!state || !editable || !selection.size || textTarget(event.target) || editor.open || viewer.open || deleteWarning.open) return;
-    internalClipboard = clone(tabItems().filter((item) => selection.has(item.id)));
-    event.preventDefault(); event.clipboardData.setData("text/plain", "moodboard image selection");
-    notify(`${internalClipboard.length} images copied inside moodboard. Choose a location or tab and paste.`);
+    if (!state || !editable || !selection.size && !sectionSelection.size || textTarget(event.target) || editor.open || viewer.open || deleteWarning.open) return;
+    copySelectedOriginals(event);
   });
 
   function openViewer(itemId) {
@@ -1593,7 +1674,8 @@
     for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
     const blob = new Blob([bytes], { type: mime });
     const decoded = await readImage(blob);
-    result.set(key, { ...decoded, name: asset.name });
+    if (asset.sha256 !== undefined && (!/^[a-f0-9]{64}$/.test(asset.sha256) || await originalHash(blob) !== asset.sha256)) throw new Error("The copied original failed its integrity check. Nothing was pasted; copy it again.");
+    result.set(key, { ...decoded, name: asset.name, ...(asset.sha256 ? { sha256: asset.sha256 } : {}) });
     return blob.size;
   }
   async function readBackup(file) {
@@ -1650,7 +1732,7 @@
   async function* encodedOriginals(snapshot) {
     for (const [id, asset] of snapshot.assets) {
       const original = await ensureOriginal(id, asset);
-      yield JSON.stringify([id, { name: asset.name, width: asset.width, height: asset.height, data: await blobToDataURL(original.blob) }]);
+      yield JSON.stringify([id, { name: asset.name, width: asset.width, height: asset.height, ...(asset.sha256 ? { sha256: asset.sha256 } : {}), data: await blobToDataURL(original.blob) }]);
     }
   }
   function scheduleCloud(delay = 1200) {
@@ -2001,6 +2083,34 @@
     } catch (error) { report(error); }
     finally { exporting = false; setSaveStatus(); }
   }
+  function htmlLibrary() {
+    openEditor("Separate HTML files", null);
+    hint("Download the campaign files while online, then open the downloaded HTML. They are memory-only: no browser image database or automatic saving. Open one large file at a time and save a new portable copy after editing.");
+    const site = "https://wendyyuanlu.github.io/moodboard/";
+    const downloads = "https://github.com/wendyyuanlu/moodboard/releases/download/campaign-boards-v1/";
+    const files = [
+      ["Main moodboard", "index.html", site],
+      ["Hanfu", "hanfu-moodboard.html", site + "hanfu-moodboard.html"],
+      ["Campaign (Kyoto) — 1 of 3", "campaign-kyoto-1.html", downloads + "campaign-kyoto-1.html"],
+      ["Campaign (Kyoto) — 2 of 3", "campaign-kyoto-2.html", downloads + "campaign-kyoto-2.html"],
+      ["Campaign (Kyoto) — 3 of 3", "campaign-kyoto-3.html", downloads + "campaign-kyoto-3.html"],
+      ["Campaign (Hanashizuku) — 1 of 2", "campaign-hanashizuku-1.html", downloads + "campaign-hanashizuku-1.html"],
+      ["Campaign (Hanashizuku) — 2 of 2", "campaign-hanashizuku-2.html", downloads + "campaign-hanashizuku-2.html"]
+    ];
+    if (location.protocol === "file:") hint("Keep the downloaded files together in one folder. Open saved file uses that exact filename beside this HTML; Online / download needs internet. Your edited copies may have different names.");
+    for (const [name, filename, url] of files) {
+      $("#editor-fields").append(el("h3", "guide-heading", name));
+      const actions = el("div", "dialog-extra");
+      const link = (text, href) => {
+        const anchor = el("a", "button", text);
+        anchor.href = href; anchor.target = "_blank"; anchor.rel = "noopener noreferrer";
+        actions.append(anchor);
+      };
+      if (location.protocol === "file:") link("Open saved file", filename);
+      link(location.protocol === "file:" ? "Online / download" : filename.startsWith("campaign-") ? "Download HTML" : "Open board", url);
+      $("#editor-fields").append(actions);
+    }
+  }
   function guide() {
     openEditor("Take your inspiration anywhere", null);
     const paragraphs = [
@@ -2014,7 +2124,7 @@
       ["On your phone", "For reliable phone use, open the hosted HTTPS site while online, then use your browser’s Add to Home Screen / Install option and import a JSON backup. Open it once to finish caching before going offline. Mobile Files apps may only preview local HTML rather than run it; portable HTML is not a guaranteed phone installation method."],
       ["GitHub autosave", "The published board is publicly viewable. To upload changes, use Settings and backups → Enable auto-sync with a fine-grained token restricted to the moodboard repository and Contents: Read and write. The token lives only in this open tab and is sent only to GitHub; enable it again after a reload. Changes upload automatically, including removal of an original file when its last placement is deleted. Earlier copies remain in Git history. Conflicts keep your local changes until you resolve them in Settings."],
       ["Offline & storage", "Original bytes are never resized or compressed. The shared site caches full originals and queues offline changes in this browser. Private browsing may discard storage, so keep backups. Save portable copy embeds ALL originals from ALL tabs and sections, including collapsed sections and the uncropped originals, plus organization and metadata. It needs no internet, GitHub login, or companion files. Portable copies contain no token and do not automatically publish; import their JSON backup on the hosted site to bring edits back. Large collections require substantial memory during export."],
-      ["Selection & editing", "Editing is on by default each time the app opens. Use the pencil beside Masonry/Grid/List to toggle editing. Turning it off protects against accidental changes. Click an image to open the original-resolution viewer. Use arrows or swipe to browse; Actual size allows panning. Copy to… duplicates images between sections/tabs; Ctrl+C / ⌘C and paste also work within the open app."],
+      ["Selection & editing", "Editing is on by default each time the app opens. Use the pencil beside Masonry/Grid/List to toggle editing. Turning it off protects against accidental changes. Click an image to open the original-resolution viewer. Use arrows or swipe to browse; Actual size allows panning. Copy or Ctrl+C / Command+C copies full originals, source links, notes, filenames and crops. Wait for Copied before pasting into another updated moodboard. Clipboard permissions and size limits vary by browser. The separate Copy to another section button opens the within-board destination dialog."],
       ["Before your flight", "Import or paste your images, save a portable copy AND a JSON backup, then test the app in airplane mode on the device you’ll use. An offline installation is ready only when the status says “Offline ready”."]
     ];
     for (const [title, text] of paragraphs) {
@@ -2199,6 +2309,7 @@
   $("#download-selected").addEventListener("click", downloadSelectedOriginals);
   $("#more").addEventListener("click", () => { if (state) settings(); });
   $("#help").addEventListener("click", guide);
+  $("#html-library").addEventListener("click", htmlLibrary);
   $("#new-tab").addEventListener("click", () => openTab());
   $("#reorder-tabs").addEventListener("click", openTabOrder);
   $("#collapse-sections").addEventListener("click", () => mutate(next => {
@@ -2256,7 +2367,8 @@
     renderSelection();
   });
   $("#clear-selection").addEventListener("click", () => { selection.clear(); sectionSelection.clear(); renderSelection(); });
-  $("#copy-selected").addEventListener("click", () => openTransfer(true));
+  $("#copy-selected").addEventListener("click", () => copySelectedOriginals());
+  $("#copy-to-selected").addEventListener("click", () => openTransfer(true));
   $("#move-selected").addEventListener("click", () => openTransfer(false));
   function deleteSelected() {
     removeItems(sectionSelection.size ? [...sectionSelection] : [...selection], sectionSelection.size > 0).catch(report);

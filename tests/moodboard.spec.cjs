@@ -275,7 +275,7 @@ test("bulk copy/move, keyboard copy, image editing and edit-off protection", asy
   await newSection(page, "Favorites");
   await page.getByRole("checkbox", { name: "Select A.png", exact: true }).check();
   await page.getByRole("checkbox", { name: "Select B.png", exact: true }).check();
-  await page.locator("#copy-selected").click();
+  await page.locator("#copy-to-selected").click();
   await page.locator("#editor [name=section]").selectOption({ label: "My inspiration / Favorites" });
   await saveDialog(page);
   await expect(page.locator(".image-card")).toHaveCount(5);
@@ -331,7 +331,7 @@ test("bulk copy/move, keyboard copy, image editing and edit-off protection", asy
     await expect(page.locator("#selection-count")).toHaveText("2 sections selected");
     await expect(page.locator("#selection-bar")).toHaveAttribute("aria-label", "Selected section actions");
     await expect(page.locator("#select-section")).toBeHidden();
-    await page.getByRole("button", { name: "Copy selected sections", exact: true }).click();
+    await page.locator("#copy-to-selected").click();
     await page.locator("#editor [name=tab]").selectOption({ label: "Destination" }); await saveDialog(page);
     const copied = await snapshot(page), destination = copied.state.tabs.find(tab => tab.name === "Destination");
     expect(destination.sections.map(section => section.name)).toEqual(["The little things", "Second"]);
@@ -1390,7 +1390,7 @@ test("photo details follow the compact field order and the 20px site shortcut fo
 test("header controls are compact and Manage precedes captions without the removed menu actions", async ({ page }) => {
   await ready(page); await showUploadButtons(page);
   await expect(page.locator(".app-header .brand, .app-header .tagline")).toHaveCount(0);
-  expect(await page.locator(".header-start > button").evaluateAll(buttons => buttons.map(button => button.id))).toEqual(["more", "add-images"]);
+  expect(await page.locator(".header-start > button").evaluateAll(buttons => buttons.map(button => button.id))).toEqual(["more", "html-library", "add-images"]);
   for (const width of [320, 390, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await expect(page.locator("#save-status")).toBeVisible();
@@ -1726,7 +1726,7 @@ test("selection copies share one original but keep independent crops and compact
       const box = await icon.boundingBox(); expect(box.width).toBe(20); expect(box.height).toBe(20);
     }
   }
-  await page.locator("#copy-selected").click(); await saveDialog(page);
+  await page.locator("#copy-to-selected").click(); await saveDialog(page);
   await expect(page.locator(".image-card")).toHaveCount(2);
   const copied = await snapshot(page), items = copied.state.tabs[0].sections[0].items;
   expect(copied.assets).toHaveLength(1); expect(items[0].assetId).toBe(items[1].assetId); expect(items[0].id).not.toBe(items[1].id);
@@ -2482,6 +2482,110 @@ test("memory-only export checkbox produces independent files without browser aut
   const output = testInfo.outputPath("travel-memory.html"); await (await event).saveAs(output);
   expect(fs.readFileSync(output, "utf8")).toContain('<script id="portable-options" type="application/json">{"memoryOnly":true}</script>');
   await expect(page.locator("#save-status")).toHaveText("Saved on this device");
+});
+
+test("button and native clipboard transfer originals and all photo details from a local HTML to another board", async ({ browser }, testInfo) => {
+  const sourceContext = await browser.newContext({ serviceWorkers: "block", permissions: ["clipboard-read", "clipboard-write"] });
+  const targetContext = await browser.newContext({ serviceWorkers: "block", permissions: ["clipboard-read", "clipboard-write"] });
+  try {
+    const setup = await sourceContext.newPage(); await ready(setup);
+    const first = await png(setup, 140, 220, "#334455"), second = await png(setup, 300, 120, "#223344");
+    await setup.locator("#image-files").setInputFiles([file("first-original.png", first), file("second-original.png", second)]);
+    await expect(setup.locator(".image-card")).toHaveCount(2);
+    const original = await snapshot(setup), entries = original.state.tabs[0].sections[0].items;
+    entries.forEach((item, index) => Object.assign(item, {
+      title: `Custom title ${index}`, notes: `Private organizing notes ${index}`,
+      sourceUrl: `https://example.test/blog/${index}`, sourceImageUrl: `https://example.test/full/${index}.png`,
+      crop: { x: 0.1, y: 0.2, width: 0.7, height: 0.5 }
+    }));
+    const records = original.assets.map(([id, asset]) => [id, { name: asset.name, width: asset.width, height: asset.height, data: `data:image/png;base64,${Buffer.from(asset.bytes).toString("base64")}` }]);
+    const lines = [{ format: "moodboard-lines", version: 1, state: original.state, assetCount: 2 }, ...records].map(record => JSON.stringify(record)).join("\n");
+    setup.once("dialog", dialog => dialog.accept());
+    await setup.locator("#backup-file").setInputFiles({ name: "metadata.jsonl", mimeType: "application/x-ndjson", buffer: Buffer.from(lines) });
+    await expect(setup.locator("#notice")).toContainText("Backup imported");
+    await setup.locator("#export-selected").click();
+    await setup.getByRole("checkbox", { name: "Select all tabs and sections", exact: true }).check();
+    await setup.getByRole("checkbox", { name: "Memory-only file (no browser autosave)", exact: true }).check();
+    const download = setup.waitForEvent("download"); await setup.locator("#editor-submit").click();
+    const output = testInfo.outputPath("clipboard-source.html"); await (await download).saveAs(output);
+    const source = await sourceContext.newPage(); await source.goto(pathToFileURL(output).href);
+    await expect(source.locator(".image-card")).toHaveCount(2);
+    await source.locator(".select-section").check(); await source.locator("#copy-selected").click();
+    await expect(source.locator("#notice")).toContainText("Copied 2 images with original files");
+    const text = await source.evaluate(() => navigator.clipboard.readText());
+    expect(text.startsWith("MOODBOARD_ORIGINALS_V1:")).toBe(true);
+    const target = await targetContext.newPage(); await ready(target);
+    await upload(target, ["existing.png"], await png(target, 60, 40, "#ff9933"));
+    const targetBefore = await snapshot(target);
+    await target.locator(".tile .insert-slot").first().click(); await target.keyboard.press("Control+v");
+    await expect(target.locator(".image-card")).toHaveCount(3);
+    const copied = await snapshot(target), items = copied.state.tabs[0].sections[0].items;
+    for (let index = 0; index < 2; index++) {
+      const { id, assetId, ...metadata } = items[index], { id: oldId, assetId: oldAssetId, ...expected } = entries[index];
+      expect(metadata).toEqual(expected); expect(id).not.toBe(oldId);
+      const asset = new Map(copied.assets).get(assetId);
+      expect(Buffer.from(asset.bytes)).toEqual(index ? second : first);
+      expect(asset.name).toBe(index ? "second-original.png" : "first-original.png");
+    }
+    expect(copied.state.settings).toEqual(targetBefore.state.settings);
+    expect(copied.state.id).toBe(targetBefore.state.id);
+    await source.keyboard.press("Control+c");
+    await expect(source.locator("#notice")).toContainText("Copied 2 images with original files");
+    await source.close();
+    await target.evaluate(() => document.querySelector("#paste-button").click());
+    await expect(target.locator(".image-card")).toHaveCount(5);
+    expect((await snapshot(target)).assets).toHaveLength(3);
+    const beforeFailure = await snapshot(target), corrupted = JSON.parse(text.slice("MOODBOARD_ORIGINALS_V1:".length));
+    corrupted.assets[0][1].sha256 = "0".repeat(64);
+    await target.evaluate(text => {
+      const data = new DataTransfer(); data.setData("text/plain", text);
+      document.body.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    }, "MOODBOARD_ORIGINALS_V1:" + JSON.stringify(corrupted));
+    await expect(target.locator("#notice")).toContainText("integrity check");
+    expect(await snapshot(target)).toEqual(beforeFailure);
+  } finally { await sourceContext.close(); await targetContext.close(); }
+});
+
+test("clipboard denial is explicit and leaves the board unchanged", async ({ page }) => {
+  await ready(page); await upload(page, ["denied.png"], await png(page));
+  const before = await snapshot(page);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      write: () => Promise.reject(new DOMException("Clipboard permission denied.", "NotAllowedError"))
+    } });
+  });
+  await page.locator(".select-image").check(); await page.locator("#copy-selected").click();
+  await expect(page.locator("#notice")).toContainText("Could not copy originals");
+  expect(await snapshot(page)).toEqual(before);
+});
+
+test("page-icon library links every independent HTML without preloading and survives offline exports", async ({ page, browser }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 }); await ready(page);
+  const before = await snapshot(page);
+  const requests = [];
+  page.on("request", request => { if (request.url().includes("/releases/download/")) requests.push(request.url()); });
+  await page.getByRole("button", { name: "Separate HTML files", exact: true }).click();
+  await expect(page.locator("#editor-title")).toHaveText("Separate HTML files");
+  await expect(page.locator("#editor-fields h3")).toHaveCount(7);
+  const links = await page.locator("#editor-fields a").evaluateAll(nodes => nodes.map(node => node.href));
+  expect(links.slice(0, 2)).toEqual(["https://wendyyuanlu.github.io/moodboard/", "https://wendyyuanlu.github.io/moodboard/hanfu-moodboard.html"]);
+  expect(links.filter(link => link.includes("/campaign-kyoto-"))).toHaveLength(3);
+  expect(links.filter(link => link.includes("/campaign-hanashizuku-"))).toHaveLength(2);
+  expect(requests).toEqual([]);
+  expect(await snapshot(page)).toEqual(before);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.locator("#cancel-editor").click();
+  const download = page.waitForEvent("download"); await page.locator("#save-portable").click();
+  const filename = testInfo.outputPath("library-portable.html"); await (await download).saveAs(filename);
+  const context = await browser.newContext({ offline: true, serviceWorkers: "block" });
+  try {
+    const portable = await context.newPage(); await portable.goto(pathToFileURL(filename).href);
+    await portable.getByRole("button", { name: "Separate HTML files", exact: true }).click();
+    await expect(portable.locator("#editor-fields a")).toHaveCount(14);
+    const local = await portable.getByRole("link", { name: "Open saved file", exact: true }).evaluateAll(nodes => nodes.map(node => node.href));
+    expect(local).toContain(pathToFileURL(path.join(path.dirname(filename), "campaign-kyoto-1.html")).href);
+    expect(local).toContain(pathToFileURL(path.join(path.dirname(filename), "campaign-hanashizuku-2.html")).href);
+  } finally { await context.close(); }
 });
 
 test("competing edits to the same notes still protect both versions with a real conflict", async ({ page, browser }) => {

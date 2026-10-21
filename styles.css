@@ -169,6 +169,9 @@ body.section-sorting .section-drag{cursor:grabbing}
 .section-end-slim{height:var(--card-gap);min-height:0;margin:0;padding:0;border:0;border-radius:0;color:var(--accent)}
 .section-end-slim:hover,.section-end-slim.chosen,.section-end-slim.drop-target{background:transparent}
 .header-actions .button{flex-shrink:0}
+.header-actions #save-status:has(.auto-sync-link){display:flex;justify-content:flex-end;align-items:center}
+.header-actions .status-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.header-actions .auto-sync-link{flex:0 0 auto;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom}
 .export-choices,.export-summary,.export-choice{grid-column:1/-1}
 .export-choices{max-height:50vh;overflow-y:auto;overscroll-behavior:contain}
 .export-tab{border-bottom:1px solid var(--line)}
