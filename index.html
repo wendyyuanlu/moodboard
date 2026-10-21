@@ -195,7 +195,7 @@ body.section-sorting .section-drag{cursor:grabbing}
 <body class="hide-add-images">
 <header class="app-header">
 <div class="header-start"><button id="more" class="icon-button" aria-label="Settings and backups"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18M3 12h18M3 19h18"/></svg></button><button id="add-images" class="icon-button edit-control toolbar-icon" aria-label="Add images" title="Add images"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H3v18h18V10M17 3h6M20 0v6M3 17l6-6 5 5 3-3 4 4"/><circle cx="8" cy="7" r="1"/></svg></button></div>
-<div class="header-actions"><span id="save-status" role="status">Opening your space…</span><button id="export-selected" class="button" aria-label="Export selected tabs and sections">Export</button><button id="save-portable" class="button">↓ Save portable copy</button></div>
+<div class="header-actions"><span id="save-status" role="status">Opening your space…</span><button id="export-selected" class="button" aria-label="Export selected tabs and sections" disabled>Export</button><button id="save-portable" class="button">↓ Save portable copy</button></div>
 </header>
 <main>
 <section class="intro" hidden><div><p class="eyebrow">COLLECT. CONNECT. CREATE.</p><h1>Your ideas, <em>all together.</em></h1><p class="subtitle">Paste a moment. Keep a feeling. Make it yours.</p></div></section>
@@ -2814,6 +2814,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   }
   async function initialize() {
     $("#save-portable").disabled = true;
+    $("#export-selected").disabled = true;
     let cleanupEmbedded;
     try {
       try { await storageDB(); }

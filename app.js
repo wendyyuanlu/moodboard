@@ -2220,6 +2220,7 @@
   }
   async function initialize() {
     $("#save-portable").disabled = true;
+    $("#export-selected").disabled = true;
     let cleanupEmbedded;
     try {
       try { await storageDB(); }

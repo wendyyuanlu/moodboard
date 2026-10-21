@@ -2221,6 +2221,14 @@ test("populated section ends use slim paste gaps while empty sections keep large
   await page.locator("#edit-toggle").click(); await expect(end).not.toBeVisible();
 });
 
+test("exports remain disabled while local storage is still opening", async ({ page }) => {
+  await page.addInitScript(() => { Object.defineProperty(window, "indexedDB", { value: { open: () => ({}) } }); });
+  await page.goto("/");
+  await expect(page.locator("#save-status")).toHaveText("Opening your space…");
+  await expect(page.locator("#save-portable")).toBeDisabled();
+  await expect(page.locator("#export-selected")).toBeDisabled();
+});
+
 test("selected HTML exports include only chosen sections, deduplicate originals and stay independent", async ({ page, browser }, testInfo) => {
   await ready(page); const bytes = await png(page); await upload(page, ["shared.png", "excluded.png"], bytes);
   const original = await snapshot(page), [shared, excluded] = original.state.tabs[0].sections[0].items;
