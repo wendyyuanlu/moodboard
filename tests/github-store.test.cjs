@@ -42,6 +42,20 @@ test("copies share original files until the last placement is deleted", async ()
   await store.write(first.revision, data);
   assert.ok(remote.files.has(imagePath));
 });
+test("whole-section deletion keeps a shared original until its last section in another tab is removed", async () => {
+  const remote = mockGitHub(), store = storeFor(remote), data = board();
+  const copy = structuredClone(data.state.tabs[0]);
+  copy.id = "other-tab"; copy.sections[0].id = "other-section"; copy.sections[0].items[0].id = "other-placement";
+  data.state.tabs.push(copy);
+  const first = await store.write(null, data), imagePath = [...remote.files.keys()].find(path => path.startsWith("images/"));
+  data.state.tabs[0].sections = []; data.state.revision++;
+  const second = await store.write(first.revision, data);
+  assert.ok(remote.files.has(imagePath));
+  data.state.tabs[1].sections = []; data.state.revision++; data.assets = [];
+  await store.write(second.revision, data);
+  assert.equal(remote.files.has(imagePath), false);
+  assert.equal(remote.files.size, 1);
+});
 test("concurrent saves use compare-and-swap, and a repeated acknowledged save is idempotent", async () => {
   const remote = mockGitHub(), store = storeFor(remote), first = board(), saved = await store.write(null, first);
   const a = structuredClone(first), b = structuredClone(first);
@@ -62,6 +76,13 @@ test("invalid packages and unsafe metadata are rejected before any GitHub call",
     (data) => { data.state.tabs[0].sections[0].items[0].crop = { x: .8, y: 0, width: .5, height: 1 }; },
     (data) => { data.assets.push(data.assets[0]); },
     (data) => { data.state.settings.showFilenames = "yes"; },
+    (data) => { data.state.settings.spacing = -1; },
+    (data) => { data.state.settings.spacing = 41; },
+    (data) => { data.state.settings.spacing = 1.5; },
+    (data) => { data.state.settings.spacing = "10"; },
+    (data) => { data.state.settings.couponCode = 42; },
+    (data) => { data.state.settings.couponCode = "x".repeat(501); },
+    (data) => { data.state.settings.couponCode = "github_pat_" + "x".repeat(30); },
     (data) => { data.state.tabs[0].sections[0].items = []; }
   ]) {
     const data = board(); change(data);

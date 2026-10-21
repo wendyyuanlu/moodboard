@@ -95,9 +95,44 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
 .coupon-code>.manage-action{display:contents}
 .coupon-code>.manage-action>button{width:40px;height:40px;min-width:40px;min-height:40px;padding:0}
 .coupon-code .button-description{grid-column:1/-1}
+.tabs-row{height:50px;min-height:50px;padding-top:0}
+#tabs{height:100%;min-width:0;align-items:center}
+.tab{height:100%;min-height:0;padding:0}
+.board-toolbar{height:50px;min-height:50px;padding:0;align-items:center;gap:0}
+.layout-tools{width:100%}
+.zoom-label{flex:1;min-width:24px;max-width:160px}
+.zoom-label input{width:100%;min-width:0}
+.spacing-controls{display:flex;flex-shrink:0;gap:2px}
+.spacing-controls .icon-button{display:flex;align-items:center;justify-content:center;width:30px;height:30px;min-width:30px;min-height:30px;padding:0}
+.section-header{min-height:44px}
+.section-toggle{flex:0 1 auto}
+.section-count{font-size:9px;font-weight:400;color:var(--muted)}
+.section-actions{margin-left:auto;flex-shrink:0}
+.section-selection{display:flex;align-items:center;justify-content:center;width:30px;height:36px;cursor:pointer}
+.select-section{width:16.8px;height:16.8px;margin:0;accent-color:var(--accent);cursor:pointer}
+body.edit-off .section-actions{display:flex;visibility:hidden;pointer-events:none}
+.section-selected>.section-header .section-toggle{color:var(--accent)}
+.images[data-layout=grid]{column-gap:var(--card-gap);row-gap:0}
+.insert-slot{height:var(--card-gap)}
+.insert-slot span{pointer-events:none}
+body.edit-off .tile{margin-bottom:var(--card-gap)}
+.images[data-layout=masonry] .tile{margin-bottom:0}
 #notice:has(.auto-sync-link){pointer-events:auto}
 .sync-check{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-left:5px;color:var(--accent);font-size:14px}
 .enable-auto-sync{position:relative;padding-right:32px}
 .enable-auto-sync .sync-check{position:absolute;right:6px;top:50%;margin:0;transform:translateY(-50%)}
 .icon-button svg,.toolbar-icon svg,.view-switch svg,.edit-toggle svg,.source-button svg,.card-tools .card-tool svg,.selection-bar svg,.viewer-button svg,.chevron svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;vertical-align:middle}
 @media(max-width:600px){.header-actions .button{font-size:10px;padding:10px 8px}}
+.app-header{position:sticky;top:0;z-index:5;height:50px;min-height:50px;max-height:50px;padding-block:4px;background:var(--paper);transition:transform .18s ease}
+.app-header.shy-hidden{transform:translateY(-100%)}
+.board-header{top:50px}
+.board-header.shy-hidden{transform:translateY(calc(-100% - 50px))}
+.auto-sync-link{display:inline-block;white-space:nowrap}
+.header-actions #save-status{line-height:1.2;max-height:36px}
+@media(max-width:400px){.app-header{gap:6px}.app-header .header-actions{gap:6px}.app-header .header-start .icon-button{width:32px;min-width:32px;padding:4px}}
+body.dragging .app-header,body.selecting .app-header{transition:none}
+@media(prefers-reduced-motion:reduce){.app-header{transition:none}}
+.coupon-code{grid-template-columns:minmax(0,1fr) 40px 40px}
+.coupon-code>.field{grid-column:1;grid-row:1}
+#copy-coupon{grid-column:2;grid-row:1}
+#save-coupon{grid-column:3;grid-row:1}

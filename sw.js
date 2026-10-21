@@ -1,4 +1,4 @@
-const CACHE = "moodboard-shell-v18";
+const CACHE = "moodboard-shell-v19";
 const FILES = ["./", "./index.html", "./icon.svg", "./manifest.webmanifest"];
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(FILES)).then(() => self.skipWaiting()));

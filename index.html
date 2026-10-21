@@ -103,12 +103,47 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
 .coupon-code>.manage-action{display:contents}
 .coupon-code>.manage-action>button{width:40px;height:40px;min-width:40px;min-height:40px;padding:0}
 .coupon-code .button-description{grid-column:1/-1}
+.tabs-row{height:50px;min-height:50px;padding-top:0}
+#tabs{height:100%;min-width:0;align-items:center}
+.tab{height:100%;min-height:0;padding:0}
+.board-toolbar{height:50px;min-height:50px;padding:0;align-items:center;gap:0}
+.layout-tools{width:100%}
+.zoom-label{flex:1;min-width:24px;max-width:160px}
+.zoom-label input{width:100%;min-width:0}
+.spacing-controls{display:flex;flex-shrink:0;gap:2px}
+.spacing-controls .icon-button{display:flex;align-items:center;justify-content:center;width:30px;height:30px;min-width:30px;min-height:30px;padding:0}
+.section-header{min-height:44px}
+.section-toggle{flex:0 1 auto}
+.section-count{font-size:9px;font-weight:400;color:var(--muted)}
+.section-actions{margin-left:auto;flex-shrink:0}
+.section-selection{display:flex;align-items:center;justify-content:center;width:30px;height:36px;cursor:pointer}
+.select-section{width:16.8px;height:16.8px;margin:0;accent-color:var(--accent);cursor:pointer}
+body.edit-off .section-actions{display:flex;visibility:hidden;pointer-events:none}
+.section-selected>.section-header .section-toggle{color:var(--accent)}
+.images[data-layout=grid]{column-gap:var(--card-gap);row-gap:0}
+.insert-slot{height:var(--card-gap)}
+.insert-slot span{pointer-events:none}
+body.edit-off .tile{margin-bottom:var(--card-gap)}
+.images[data-layout=masonry] .tile{margin-bottom:0}
 #notice:has(.auto-sync-link){pointer-events:auto}
 .sync-check{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-left:5px;color:var(--accent);font-size:14px}
 .enable-auto-sync{position:relative;padding-right:32px}
 .enable-auto-sync .sync-check{position:absolute;right:6px;top:50%;margin:0;transform:translateY(-50%)}
 .icon-button svg,.toolbar-icon svg,.view-switch svg,.edit-toggle svg,.source-button svg,.card-tools .card-tool svg,.selection-bar svg,.viewer-button svg,.chevron svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;vertical-align:middle}
 @media(max-width:600px){.header-actions .button{font-size:10px;padding:10px 8px}}
+.app-header{position:sticky;top:0;z-index:5;height:50px;min-height:50px;max-height:50px;padding-block:4px;background:var(--paper);transition:transform .18s ease}
+.app-header.shy-hidden{transform:translateY(-100%)}
+.board-header{top:50px}
+.board-header.shy-hidden{transform:translateY(calc(-100% - 50px))}
+.auto-sync-link{display:inline-block;white-space:nowrap}
+.header-actions #save-status{line-height:1.2;max-height:36px}
+@media(max-width:400px){.app-header{gap:6px}.app-header .header-actions{gap:6px}.app-header .header-start .icon-button{width:32px;min-width:32px;padding:4px}}
+body.dragging .app-header,body.selecting .app-header{transition:none}
+@media(prefers-reduced-motion:reduce){.app-header{transition:none}}
+.coupon-code{grid-template-columns:minmax(0,1fr) 40px 40px}
+.coupon-code>.field{grid-column:1;grid-row:1}
+#copy-coupon{grid-column:2;grid-row:1}
+#save-coupon{grid-column:3;grid-row:1}
 </style>
 </head>
 <body>
@@ -125,7 +160,7 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
 <button data-layout="masonry" aria-label="Masonry" title="Masonry" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="11" rx="1"/><rect x="14" y="3" width="7" height="6" rx="1"/><rect x="3" y="18" width="7" height="3" rx="1"/><rect x="14" y="13" width="7" height="8" rx="1"/></svg></button>
 <button data-layout="grid" aria-label="Grid" title="Grid" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
 <button data-layout="list" aria-label="List" title="List" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h12M9 12h12M9 19h12M3 5h1M3 12h1M3 19h1"/></svg></button>
-</div><label class="zoom-label"><input id="zoom" type="range" min="100" max="420" step="10" value="220" aria-label="Image display size"></label><button id="edit-toggle" class="icon-button edit-toggle" aria-label="Turn editing off" title="Editing on — click to turn off" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14z"/></svg></button></div>
+</div><label class="zoom-label"><input id="zoom" type="range" min="100" max="420" step="10" value="220" aria-label="Image display size"></label><div id="card-spacing" class="spacing-controls" role="group" aria-label="Card spacing"><button id="decrease-spacing" class="icon-button" aria-label="Decrease card spacing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button><button id="increase-spacing" class="icon-button" aria-label="Increase card spacing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg></button></div><button id="edit-toggle" class="icon-button edit-toggle" aria-label="Turn editing off" title="Editing on — click to turn off" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14z"/></svg></button></div>
 </section>
 </div>
 <aside id="paste-toolbar" class="paste-toolbar edit-control" hidden><span class="paste-icon" aria-hidden="true">↳</span><span id="paste-location">Paste at the bottom</span><button id="paste-button" class="text-button">Paste</button><button id="paste-bottom" class="text-button">Append at bottom</button><button id="new-section" class="text-button">+ Section</button></aside>
@@ -164,6 +199,9 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
       && crop.x >= 0 && crop.y >= 0 && crop.width > 0 && crop.height > 0
       && crop.x + crop.width <= 1 + 1e-10 && crop.y + crop.height <= 1 + 1e-10;
   }
+  function validCoupon(value) {
+    return typeof value === "string" && value.length <= 500 && !/github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}/.test(value);
+  }
   function validate(data, assetMap) {
     const fail = () => { throw new Error("This moodboard file is invalid or incomplete. Your current board has not been replaced."); };
     const text = (value, max, required = false) => typeof value === "string" && value.length <= max && (!required || value.trim().length > 0);
@@ -190,12 +228,14 @@ dialog.crop-editor{width:min(760px,94vw)}.crop-stage{position:relative;margin:14
     const settings = data.settings;
     if (!settings || !["masonry", "grid", "list"].includes(settings.layout) || !["light", "dark"].includes(settings.theme) || !/^#[a-f0-9]{6}$/i.test(settings.accent) || !Number.isFinite(settings.zoom) || settings.zoom < 100 || settings.zoom > 420) fail();
     for (const key of ["showCaptions", "showFilenames", "showUrls"]) if (settings[key] !== undefined && typeof settings[key] !== "boolean") fail();
+    if (settings.spacing !== undefined && (!Number.isInteger(settings.spacing) || settings.spacing < 0 || settings.spacing > 40)) fail();
+    if (settings.couponCode !== undefined && !validCoupon(settings.couponCode)) fail();
     for (const [key, asset] of assetMap) {
       if (!text(key, 150, true) || !asset || !(asset.blob instanceof Blob) || !supportedImage.test(asset.blob.type) || !text(asset.name, 500, true) || !Number.isInteger(asset.width) || asset.width <= 0 || !Number.isInteger(asset.height) || asset.height <= 0) fail();
     }
     return data;
   }
-  return Object.freeze({ supportedImage, sourcePageURL, validCrop, validate });
+  return Object.freeze({ supportedImage, sourcePageURL, validCrop, validCoupon, validate });
 })();
 if (typeof module !== "undefined") module.exports = MoodboardFormat;
 
@@ -388,7 +428,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   const deleteWarning = $("#delete-warning");
   let deleteSkipsRemaining = 0, deleting = false;
   let state, db, assets = new Map(), urls = new Map();
-  let editable = true, selection = new Set(), cursor = null, editorAction, editorDelete, editorSuccess;
+  let editable = true, selection = new Set(), sectionSelection = new Set(), cursor = null, editorAction, editorDelete, editorSuccess;
   let queue = Promise.resolve(), pending = 0, memoryOnly = false, dirty = false;
   let noticeTimer, viewItems = [], viewIndex = 0, internalClipboard = [];
   let suppressClickUntil = 0, gesture = null, dragFrame = 0, selectedTarget = null;
@@ -560,7 +600,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       } else lastSync.append(document.createTextNode("Not synced on this device"));
     }
     const copyCoupon = $("#copy-coupon");
-    if (copyCoupon) copyCoupon.disabled = !couponCode || $("#editor-submit").disabled;
+    if (copyCoupon) copyCoupon.disabled = !$("#coupon-code").value || $("#editor-submit").disabled;
     const unavailable = !navigator.onLine ? "Reconnect to the internet to use GitHub."
       : !cloudEnabled ? "GitHub sync is available on the published website. Local and portable copies save on this device." : "";
     for (const control of $$(".github-action")) {
@@ -591,6 +631,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     if (cloudEnabled) { cloudInfo.dirty = true; scheduleCloud(); }
     for (const [key, url] of urls) if (!assets.has(key)) { URL.revokeObjectURL(url); urls.delete(key); }
     selection = new Set([...selection].filter((id) => tabItems().some((item) => item.id === id)));
+    sectionSelection = new Set([...sectionSelection].filter((id) => activeTab().sections.some((section) => section.id === id)));
     if (cursor && !activeTab().sections.some((section) => section.id === cursor.sectionId)) cursor = null;
     if (cursor?.beforeId && !findSection(cursor.sectionId).items.some((item) => item.id === cursor.beforeId)) cursor.beforeId = null;
     render();
@@ -632,8 +673,21 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       card.classList.toggle("selected", selected);
       $(".select-image", card).checked = selected;
     }
-    $("#selection-bar").hidden = !editable || !selection.size;
-    $("#selection-count").textContent = `${selection.size} selected`;
+    for (const section of $$(".section")) {
+      const selected = sectionSelection.has(section.dataset.sectionId);
+      section.classList.toggle("section-selected", selected);
+      $(".select-section", section).checked = selected;
+    }
+    const wholeSections = sectionSelection.size > 0, count = wholeSections ? sectionSelection.size : selection.size;
+    $("#selection-bar").hidden = !editable || !count;
+    $("#selection-bar").setAttribute("aria-label", wholeSections ? "Selected section actions" : "Selected image actions");
+    $("#selection-count").textContent = wholeSections ? `${count} ${count === 1 ? "section" : "sections"} selected` : `${count} selected`;
+    $("#select-section").hidden = wholeSections;
+    $("#select-all").title = wholeSections ? "Select every section in this tab" : "Select every image in this tab";
+    for (const [id, action] of [["copy-selected", "Copy"], ["move-selected", "Move"], ["delete-selected", "Delete"]]) {
+      const label = `${action} selected ${wholeSections ? "sections" : "images"}`;
+      $(`#${id}`).setAttribute("aria-label", label); $(`#${id}`).title = label;
+    }
   }
   function createTabControl(tabId) {
     const control = button("", () => { if (!editor.open) switchTab(tabId); }, "tab");
@@ -683,6 +737,10 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     document.documentElement.style.setProperty("--accent", state.settings.accent);
     document.documentElement.style.setProperty("--tile-size", `${state.settings.zoom}px`);
     $("#zoom").value = state.settings.zoom;
+    document.documentElement.style.setProperty("--card-gap", `${cardGap()}px`);
+    $("#decrease-spacing").disabled = cardGap() === 0;
+    $("#increase-spacing").disabled = cardGap() === 40;
+    $("#card-spacing").title = `Card spacing: ${cardGap()}px`;
     $("#edit-toggle").setAttribute("aria-label", editable ? "Turn editing off" : "Turn editing on");
     $("#edit-toggle").title = editable ? "Editing on — click to turn off" : "Editing off — click to turn on";
     $("#edit-toggle").setAttribute("aria-pressed", String(editable));
@@ -702,9 +760,13 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     cancelAnimationFrame(masonryFrame);
     masonryFrame = requestAnimationFrame(layoutMasonry);
   }
+  function cardGap(data = state) {
+    return data.settings.spacing ?? (innerWidth <= 600 ? 10 : 18);
+  }
   function layoutMasonry() {
     if (!state) return;
-    const gap = innerWidth <= 600 ? 10 : 18;
+    const gap = cardGap();
+    document.documentElement.style.setProperty("--card-gap", `${gap}px`);
     for (const container of $$(".images[data-layout=masonry]")) {
       const tiles = [...container.children], width = container.clientWidth;
       if (!width || !tiles.length) { container.style.height = "0px"; continue; }
@@ -737,14 +799,24 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     const toggle = button("", () => mutate((next) => { findSection(section.id, next).collapsed = !findSection(section.id, next).collapsed; }), "section-toggle");
     toggle.setAttribute("aria-expanded", String(!section.collapsed));
     const chevron = el("span", "chevron"); setIcon(chevron, '<path d="m6 9 6 6 6-6"/>');
-    toggle.append(chevron, el("strong", "", section.name), el("small", "", String(section.items.length)));
+    toggle.append(chevron, el("strong", "", section.name));
     const actions = el("div", "section-actions edit-control");
-    const add = button("+ Add", () => { setCursor(section.id); $("#image-files").click(); });
+    const add = button("", () => { setCursor(section.id); $("#image-files").click(); }, "icon-button section-upload");
+    add.setAttribute("aria-label", `Add images to ${section.name}`); add.title = `Add images to ${section.name}`;
+    add.append($("#add-images svg").cloneNode(true));
     const edit = button("···", () => openSection(section), "icon-button");
     setIcon(edit, '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>');
     edit.setAttribute("aria-label", `Edit section ${section.name}`);
-    actions.append(add, edit);
-    header.append(toggle, actions); node.append(header);
+    const check = el("input", "select-section"); check.type = "checkbox";
+    check.setAttribute("aria-label", `Select section ${section.name}`);
+    check.addEventListener("change", () => {
+      selection.clear();
+      if (check.checked) sectionSelection.add(section.id); else sectionSelection.delete(section.id);
+      renderSelection();
+    });
+    const checkArea = el("label", "section-selection"); checkArea.append(check);
+    actions.append(checkArea, add, edit);
+    header.append(toggle, el("small", "section-count", String(section.items.length)), actions); node.append(header);
     const body = el("div", "section-body");
     body.hidden = section.collapsed;
     const images = el("div", "images"); images.dataset.layout = state.settings.layout;
@@ -767,6 +839,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     const hit = button("", (event) => {
       if (performance.now() < suppressClickUntil) return;
       if (editable && (event.ctrlKey || event.metaKey || event.shiftKey)) {
+        sectionSelection.clear();
         if (event.shiftKey && selection.size) {
           const items = tabItems(); const start = items.findIndex((entry) => entry.id === [...selection].at(-1));
           const end = items.findIndex((entry) => entry.id === item.id);
@@ -813,11 +886,11 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     hit.append(img);
     const check = el("input", "select-image"); check.type = "checkbox";
     check.setAttribute("aria-label", `Select ${item.title}`);
-    check.addEventListener("change", () => { if (check.checked) selection.add(item.id); else selection.delete(item.id); renderSelection(); });
+    check.addEventListener("change", () => { sectionSelection.clear(); if (check.checked) selection.add(item.id); else selection.delete(item.id); renderSelection(); });
     const checkArea = el("label", "image-selection"); checkArea.append(check);
     const tools = el("div", "card-tools");
     const drag = button("⠿", () => {
-      if (performance.now() >= suppressClickUntil) { selection.add(item.id); renderSelection(); notify("Hold and drag to rearrange, or use Move to… below."); }
+      if (performance.now() >= suppressClickUntil) { sectionSelection.clear(); selection.add(item.id); renderSelection(); notify("Hold and drag to rearrange, or use Move to… below."); }
     }, "card-tool drag-handle");
     drag.setAttribute("aria-label", `Drag ${item.title}`);
     setIcon(drag, '<circle cx="8" cy="5" r="1"/><circle cx="16" cy="5" r="1"/><circle cx="8" cy="12" r="1"/><circle cx="16" cy="12" r="1"/><circle cx="8" cy="19" r="1"/><circle cx="16" cy="19" r="1"/>');
@@ -840,7 +913,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   }
   function switchTab(tabId) {
     if (state.activeTab === tabId) return;
-    cursor = null; selection.clear();
+    cursor = null; selection.clear(); sectionSelection.clear();
     mutate((next) => { next.activeTab = tabId; });
   }
 
@@ -896,7 +969,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
         const item = tab ? next.tabs.find((entry) => entry.id === tab.id) : { id: uid(), sections: [] };
         item.name = name; reorder(next.tabs, item, form.get("position")); next.activeTab = item.id;
       }));
-      cursor = null; selection.clear(); render();
+      cursor = null; selection.clear(); sectionSelection.clear(); render();
     }, tab ? async () => {
       if (state.tabs.length === 1) throw new Error("Keep at least one tab. You can rename or empty this one.");
       if (!confirm(`Delete “${tab.name}” and everything inside it? Export a backup first if you want to keep a copy.`)) return false;
@@ -916,7 +989,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
           next.tabs.splice(next.tabs.findIndex((entry) => entry.id === tab.id) + 1, 0, copy);
           next.activeTab = copy.id;
         }));
-        cursor = null; selection.clear(); editor.close(); render(); notify("Tab duplicated.");
+        cursor = null; selection.clear(); sectionSelection.clear(); editor.close(); render(); notify("Tab duplicated.");
       } catch (error) { showEditorError(error); }
     }, "button"));
   }
@@ -933,12 +1006,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
         reorder(target, item, form.get("position"));
         next.activeTab = form.get("tab");
       }));
-    }, section ? async () => {
-      if (!confirm(`Delete section “${section.name}” and its ${section.items.length} images? This cannot be undone.`)) return false;
-      await enqueue(() => commit((next) => {
-        for (const tab of next.tabs) tab.sections = tab.sections.filter((entry) => entry.id !== section.id);
-      }));
-    } : null);
+    }, section ? () => removeItems([section.id], true) : null);
     nameField("Section name", section?.name || "");
     const tabSelect = field("Tab", "tab", tabId, "text", state.tabs.map((tab) => [tab.id, tab.name]));
     positionField(section ? current.sections.findIndex((entry) => entry.id === section.id) + 1 : current.sections.length + 1, current.sections.length + (section ? 0 : 1));
@@ -1096,6 +1164,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     destination.collapsed = false;
   }
   function openTransfer(copy) {
+    if (sectionSelection.size) { openSectionTransfer(copy); return; }
     if (!selection.size) return;
     const ids = [...selection];
     const options = sectionOptions();
@@ -1110,7 +1179,30 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     select.addEventListener("change", () => { $("[name=position]", editor).max = $("[name=position]", editor).value = maximum(); });
     hint("The selected images keep their relative order. Copies share the original bytes without doubling local storage.");
   }
-  async function removeItems(ids) {
+  function openSectionTransfer(copy) {
+    const ids = new Set(sectionSelection), tabId = state.activeTab;
+    const targetTab = state.tabs.find((tab) => tab.id !== tabId) || activeTab();
+    openEditor(`${copy ? "Copy" : "Move"} ${ids.size} ${ids.size === 1 ? "section" : "sections"}`, async (form) => {
+      await enqueue(() => commit((next) => {
+        const source = next.tabs.find((tab) => tab.id === tabId);
+        const selected = source.sections.filter((section) => ids.has(section.id));
+        if (selected.length !== ids.size) throw new Error("The selected sections changed. Close this dialog and select them again.");
+        const target = next.tabs.find((tab) => tab.id === form.get("tab"));
+        if (!target) throw new Error("The destination tab no longer exists. Choose another tab.");
+        if (!copy) source.sections = source.sections.filter((section) => !ids.has(section.id));
+        const index = Math.max(0, Math.min(target.sections.length, Number(form.get("position")) - 1));
+        target.sections.splice(index, 0, ...selected.map((section) => copy ? duplicateSection(section) : section));
+      }));
+      sectionSelection.clear(); renderSelection();
+    });
+    const select = field("Destination tab", "tab", targetTab.id, "text", state.tabs.map((tab) => [tab.id, tab.name]));
+    const maximum = () => state.tabs.find((tab) => tab.id === select.value).sections.filter((section) => copy || !ids.has(section.id)).length + 1;
+    positionField(maximum(), maximum());
+    select.addEventListener("change", () => { $("[name=position]", editor).max = $("[name=position]", editor).value = maximum(); });
+    hint("Sections keep their relative order, images, crops, and collapsed state. Copies share original files without duplicating storage.");
+  }
+  async function removeItems(ids, wholeSections = false) {
+    if (!ids.length) { notify("Select something to delete first."); return false; }
     if (deleting) { notify("Finish the current deletion first."); return false; }
     deleting = true;
     try {
@@ -1118,7 +1210,10 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       let allowance = deleteSkipsRemaining;
       if (!skipped) {
         $("#delete-warning-form").reset(); $("#delete-skip").setCustomValidity("");
-        $("#delete-warning-message").textContent = `Delete ${ids.length} ${ids.length === 1 ? "image" : "images"}? This cannot be undone.`;
+        const images = wholeSections ? sections().filter((section) => ids.includes(section.id)).reduce((count, section) => count + section.items.length, 0) : ids.length;
+        $("#delete-warning-message").textContent = wholeSections
+          ? `Delete ${ids.length} ${ids.length === 1 ? "section" : "sections"} and their ${images} ${images === 1 ? "image" : "images"}? This cannot be undone.`
+          : `Delete ${ids.length} ${ids.length === 1 ? "image" : "images"}? This cannot be undone.`;
         deleteWarning.returnValue = "";
         allowance = await new Promise((resolve) => {
           deleteWarning.addEventListener("close", () => resolve(deleteWarning.returnValue === "delete" ? Number($("#delete-skip").value) : null), { once: true });
@@ -1128,10 +1223,12 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       }
       const wanted = new Set(ids);
       await enqueue(() => commit((next) => {
-        for (const section of sections(next)) section.items = section.items.filter((item) => !wanted.has(item.id));
+        if (wholeSections) for (const tab of next.tabs) tab.sections = tab.sections.filter((section) => !wanted.has(section.id));
+        else for (const section of sections(next)) section.items = section.items.filter((item) => !wanted.has(item.id));
       }));
       deleteSkipsRemaining = skipped ? allowance - 1 : allowance;
-      selection.clear(); renderSelection();
+      selection.clear(); sectionSelection.clear(); renderSelection();
+      return true;
     } finally { deleting = false; }
   }
   $("#delete-warning-form").addEventListener("submit", (event) => {
@@ -1327,6 +1424,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     if (!gesture || !editable) return;
     revealHeader();
     gesture.dragging = true;
+    sectionSelection.clear();
     if (!selection.has(gesture.itemId)) { selection.clear(); selection.add(gesture.itemId); }
     gesture.ids = tabItems().filter((item) => selection.has(item.id)).map((item) => item.id);
     renderSelection();
@@ -1367,6 +1465,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     if (!gesture || gesture.boxActive) return;
     revealHeader();
     clearTimeout(gesture.timer);
+    sectionSelection.clear();
     gesture.box = gesture.boxActive = true;
     gesture.capture = $("#sections");
     gesture.capture.setPointerCapture(gesture.pointerId);
@@ -1403,7 +1502,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     $("#drag-preview").hidden = true; $("#rubber-band").hidden = true;
     if (old.boxActive) {
       suppressClickUntil = performance.now() + 500;
-      if (cancelled) { selection = old.previous; renderSelection(); }
+      if (cancelled) { selection = old.previous; sectionSelection = old.previousSections; renderSelection(); }
     }
     if (old.dragging) {
       suppressClickUntil = performance.now() + 500;
@@ -1420,12 +1519,12 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       event.preventDefault(); event.stopImmediatePropagation();
     }
   }, true);
-  $("#sections").addEventListener("pointerdown", (event) => {
-    if (!editable || event.button !== 0 || editor.open || viewer.open || deleteWarning.open || pending) return;
+  document.addEventListener("pointerdown", (event) => {
+    if (!editable || event.button !== 0 || !event.target.closest("main") || event.target.closest("#board-header,.section-header") || editor.open || viewer.open || deleteWarning.open || pending) return;
     const card = event.target.closest(".image-card");
     const fromCheckbox = Boolean(event.target.closest(".image-selection"));
     const origin = { pointerId: event.pointerId, pointerType: event.pointerType, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY,
-      anchorX: event.clientX + scrollX, anchorY: event.clientY + scrollY, previous: new Set(selection),
+      anchorX: event.clientX + scrollX, anchorY: event.clientY + scrollY, previous: new Set(selection), previousSections: new Set(sectionSelection),
       initial: event.ctrlKey || event.metaKey || event.shiftKey ? new Set(selection) : new Set() };
     if (card && (event.target.closest(".image-hit") || event.target.closest(".drag-handle") || fromCheckbox)) {
       if (fromCheckbox && event.pointerType !== "mouse") return;
@@ -1434,7 +1533,8 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       if (!fromCheckbox) gesture.timer = setTimeout(startDrag, handle ? 120 : 420);
       return;
     }
-    if (event.pointerType !== "mouse" || event.target.closest("button,input,a,.image-card")) return;
+    const pasteGap = event.target.closest(".insert-slot,.section-end");
+    if (event.pointerType !== "mouse" || (!pasteGap && event.target.closest("button,input,a,.image-card"))) return;
     event.preventDefault();
     gesture = { ...origin, box: true };
   });
@@ -1548,7 +1648,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     await persist(next, nextAssets, next.id === state.id ? state.revision : existing?.state.revision ?? -1, info);
     for (const url of urls.values()) URL.revokeObjectURL(url);
     urls.clear(); state = next; assets = nextAssets; cloudInfo = info;
-    selection.clear(); cursor = null; internalClipboard = []; cloudConflict = false;
+    selection.clear(); sectionSelection.clear(); cursor = null; internalClipboard = []; cloudConflict = false;
     render(); channel?.postMessage({ id: state.id, revision: state.revision });
     if (merge) notify("This device's existing images were added to the public board without removing shared images.");
   }
@@ -1663,6 +1763,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       find("#portable-data").textContent = JSON.stringify(data).replace(/</g, "\\u003c");
       find("#cloud-config").textContent = "null";
       find("#board-header").classList.remove("shy-hidden");
+      find(".app-header").classList.remove("shy-hidden");
       find("#editor-form").append(find(".dialog-footer"));
       for (const selector of ["#sections", "#tabs", "#editor-fields", "#editor-extra"]) find(selector).replaceChildren();
       for (const node of html.querySelectorAll("dialog")) node.removeAttribute("open");
@@ -1721,7 +1822,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     const heading = el("div", "manage-heading"), descriptions = [];
     const info = button("", () => {
       showManageHelp = !showManageHelp;
-      for (const description of $$(".button-description", manage)) description.hidden = !showManageHelp;
+      for (const description of $$(".button-description", editor)) description.hidden = !showManageHelp;
       info.setAttribute("aria-pressed", String(showManageHelp));
       info.setAttribute("aria-expanded", String(showManageHelp));
     }, "icon-button manage-info");
@@ -1789,19 +1890,34 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     const total = [...assets.values()].reduce((sum, asset) => sum + asset.blob.size, 0);
     manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)}. Local autosave is not a backup; export a copy regularly.`));
     const couponSection = el("div", "coupon-code");
-    const couponInput = field("Coupon code", "coupon", couponCode);
-    couponInput.id = "coupon-code"; couponInput.removeAttribute("name"); couponInput.readOnly = true;
+    const couponInput = field("Coupon code", "coupon", state.settings.couponCode ?? couponCode);
+    couponInput.id = "coupon-code"; couponInput.removeAttribute("name"); couponInput.maxLength = 500;
+    couponInput.addEventListener("input", updateGitHubControls);
     const copyCoupon = action("Copy coupon", async () => {
       try {
         if (!navigator.clipboard?.writeText) throw new Error("Clipboard writing is unavailable in this browser.");
-        await navigator.clipboard.writeText(couponCode);
+        await navigator.clipboard.writeText(couponInput.value);
         notify("Coupon copied.");
       } catch (error) { report(new Error("Could not copy the coupon. Allow clipboard access in this browser and try again.", { cause: error })); }
     }, "Copy the public coupon code to your clipboard, including offline. This is not a GitHub credential and does not enable auto-sync.", "button icon-button");
     copyCoupon.id = "copy-coupon";
     copyCoupon.setAttribute("aria-label", "Copy coupon"); copyCoupon.title = "Copy coupon";
     setIcon(copyCoupon, '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/>');
-    couponSection.append(couponInput.closest(".field"), copyCoupon); manage.insertBefore(couponSection, manage.querySelector(".destructive-actions"));
+    const saveCoupon = action("Save coupon", async () => {
+      try {
+        if (!MoodboardFormat.validCoupon(couponInput.value)) throw new Error("Coupon codes must be at most 500 characters and cannot contain GitHub access tokens.");
+        const value = couponInput.value;
+        saveCoupon.disabled = true;
+        await enqueue(() => commit((next) => { next.settings.couponCode = value; }));
+        editor.close();
+        notify(memoryOnly ? "Coupon is only in memory. Export a backup to keep it." : cloudEnabled ? "Coupon saved on this device and queued for GitHub sync." : "Coupon saved on this device. Include it in a backup to sync on the published site.");
+      } catch (error) { report(error); }
+      finally { saveCoupon.disabled = false; }
+    }, "Save this public coupon with the board and close settings. With auto-sync enabled it uploads to GitHub and appears on other devices; offline saves wait to sync. JSON backups and portable copies include the saved value. Never enter a GitHub access token here.", "button icon-button");
+    saveCoupon.id = "save-coupon";
+    saveCoupon.setAttribute("aria-label", "Save coupon"); saveCoupon.title = "Save coupon";
+    setIcon(saveCoupon, '<path d="M4 3h13l4 4v14H3V3h1Z"/><path d="M7 3v6h10V3M7 21v-8h10v8M14 4v3"/>');
+    couponSection.append(couponInput.closest(".field"), copyCoupon, saveCoupon); $("#editor-extra").append(couponSection);
     descriptions.forEach(({ control, description }, index) => {
       const wrapper = el("div", "manage-action"), text = el("p", "button-description", description);
       text.id = `manage-help-${index}`; text.hidden = !showManageHelp;
@@ -1821,6 +1937,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     $("#editor-fields").append($(".dialog-footer"));
     const accent = field("Accent color", "accent", state.settings.accent, "color");
     $("#editor-extra").append(accent.closest(".field"));
+    $("#editor-extra").append(couponSection);
     updateGitHubControls();
   }
   $("#backup-file").addEventListener("change", async (event) => {
@@ -1835,7 +1952,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
         await persist(next, imported.assets, -1, cloudEnabled ? { ...cloudInfo, dirty: true } : undefined);
         for (const url of urls.values()) URL.revokeObjectURL(url);
         urls.clear(); state = next; assets = imported.assets;
-        selection.clear(); cursor = null; internalClipboard = []; dirty = true;
+        selection.clear(); sectionSelection.clear(); cursor = null; internalClipboard = []; dirty = true;
         if (cloudEnabled) { cloudInfo.dirty = true; scheduleCloud(); }
         render();
       });
@@ -1875,7 +1992,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   function appendAtBottom() { cursor = null; renderCursor(); notify("New images will be appended at the bottom of this tab."); }
   $("#paste-bottom").addEventListener("click", appendAtBottom);
   $("#edit-toggle").addEventListener("click", () => {
-    editable = !editable; selection.clear(); endGesture(true); render();
+    editable = !editable; endGesture(true); selection.clear(); sectionSelection.clear(); render();
   });
   for (const control of $$("button[data-layout]")) control.addEventListener("click", () => mutate((next) => { next.settings.layout = control.dataset.layout; }));
   $("#zoom").addEventListener("input", (event) => {
@@ -1885,28 +2002,42 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   $("#zoom").addEventListener("change", (event) => {
     const zoom = Number(event.target.value); mutate((next) => { next.settings.zoom = zoom; });
   });
-  const boardHeader = $("#board-header");
+  for (const [id, delta] of [["decrease-spacing", -2], ["increase-spacing", 2]]) {
+    $(`#${id}`).addEventListener("click", () => mutate((next) => {
+      next.settings.spacing = Math.min(40, Math.max(0, cardGap(next) + delta));
+    }));
+  }
+  const boardHeader = $("#board-header"), appHeader = $(".app-header");
   let headerScrollY = scrollY;
-  const revealHeader = () => { boardHeader.classList.remove("shy-hidden"); headerScrollY = Math.max(0, scrollY); };
+  const revealHeader = () => { boardHeader.classList.remove("shy-hidden"); appHeader.classList.remove("shy-hidden"); headerScrollY = Math.max(0, scrollY); };
   boardHeader.addEventListener("focusin", revealHeader);
+  appHeader.addEventListener("focusin", revealHeader);
   document.addEventListener("scroll", () => {
     const y = Math.max(0, scrollY), delta = y - headerScrollY;
-    if (y === 0 || boardHeader.getBoundingClientRect().top > 0 || editor.open || viewer.open || gesture || boardHeader.querySelector(":focus-visible")) {
+    if (y === 0 || boardHeader.getBoundingClientRect().top > 50 || editor.open || viewer.open || gesture || boardHeader.querySelector(":focus-visible") || appHeader.querySelector(":focus-visible")) {
       revealHeader(); return;
     }
     if (Math.abs(delta) < 8) return;
-    boardHeader.classList.toggle("shy-hidden", delta > 0); headerScrollY = y;
+    boardHeader.classList.toggle("shy-hidden", delta > 0); appHeader.classList.toggle("shy-hidden", delta > 0); headerScrollY = y;
   }, { passive: true });
-  $("#select-all").addEventListener("click", () => { selection = new Set(tabItems().map((item) => item.id)); renderSelection(); });
+  function selectAll() {
+    if (sectionSelection.size) sectionSelection = new Set(activeTab().sections.map((section) => section.id));
+    else selection = new Set(tabItems().map((item) => item.id));
+    renderSelection();
+  }
+  $("#select-all").addEventListener("click", selectAll);
   $("#select-section").addEventListener("click", () => {
     const selectedSections = activeTab().sections.filter((section) => section.items.some((item) => selection.has(item.id)));
     selection = new Set(selectedSections.flatMap((section) => section.items.map((item) => item.id)));
     renderSelection();
   });
-  $("#clear-selection").addEventListener("click", () => { selection.clear(); renderSelection(); });
+  $("#clear-selection").addEventListener("click", () => { selection.clear(); sectionSelection.clear(); renderSelection(); });
   $("#copy-selected").addEventListener("click", () => openTransfer(true));
   $("#move-selected").addEventListener("click", () => openTransfer(false));
-  $("#delete-selected").addEventListener("click", () => { removeItems([...selection]).catch(report); });
+  function deleteSelected() {
+    removeItems(sectionSelection.size ? [...sectionSelection] : [...selection], sectionSelection.size > 0).catch(report);
+  }
+  $("#delete-selected").addEventListener("click", deleteSelected);
   document.addEventListener("keydown", (event) => {
     if (!state || textTarget(event.target)) return;
     if (viewer.open) {
@@ -1917,14 +2048,14 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     if (editor.open || deleteWarning.open) return;
     if (event.key === "Escape") {
       if (gesture) endGesture(true);
-      else { selection.clear(); renderSelection(); }
+      else { selection.clear(); sectionSelection.clear(); renderSelection(); }
     }
     if (!editable) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
-      event.preventDefault(); selection = new Set(tabItems().map((item) => item.id)); renderSelection();
+      event.preventDefault(); selectAll();
     }
-    if ((event.key === "Delete" || event.key === "Backspace") && selection.size) {
-      event.preventDefault(); removeItems([...selection]).catch(report);
+    if ((event.key === "Delete" || event.key === "Backspace") && (selection.size || sectionSelection.size)) {
+      event.preventDefault(); deleteSelected();
     }
   });
   document.addEventListener("touchmove", (event) => { if (gesture?.dragging) event.preventDefault(); }, { passive: false });

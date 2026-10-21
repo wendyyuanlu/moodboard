@@ -44,6 +44,11 @@ async function newSection(page, name) {
   await page.locator("#editor [name=name]").fill(name);
   await saveDialog(page);
 }
+async function newTab(page, name) {
+  await page.locator("#new-tab").click();
+  await page.locator("#editor [name=name]").fill(name);
+  await saveDialog(page);
+}
 async function snapshot(page) {
   return page.evaluate(async () => {
     const db = await new Promise((resolve, reject) => {
@@ -221,8 +226,8 @@ test("tabs and sections rename, duplicate, reorder, move, collapse and delete", 
   await expect(tabTitle(page)).toHaveText("My inspiration");
   await expect(page.locator(".section")).toHaveCount(2);
   await page.getByRole("button", { name: "Edit section Favorites", exact: true }).click();
-  page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#editor-delete").click();
+  await page.locator("#delete-warning-submit").click();
   await expect(page.locator("#editor")).not.toBeVisible();
   await expect(page.locator(".section")).toHaveCount(1);
   await editTab(page);
@@ -269,6 +274,7 @@ test("bulk copy/move, keyboard copy, image editing and edit-off protection", asy
     document.body.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true }));
     document.body.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
   });
+
   await expect(page.locator(".image-card")).toHaveCount(6);
   await page.locator("#select-all").click();
   await expect(page.locator("#selection-count")).toHaveText("6 selected");
@@ -276,6 +282,163 @@ test("bulk copy/move, keyboard copy, image editing and edit-off protection", asy
   await page.locator("#delete-warning-submit").click();
   await expect(page.locator(".image-card")).toHaveCount(0);
   expect((await snapshot(page)).assets).toHaveLength(0);
+});
+
+  test("section checkboxes bulk copy and move in board order while sharing originals, and deletion prunes only unused files", async ({ page }) => {
+    await ready(page); const bytes = await png(page);
+    await upload(page, ["unique.png", "shared.png"], bytes);
+    await newSection(page, "Second");
+    await page.getByRole("button", { name: "Paste at end of Second", exact: true }).click();
+    await upload(page, ["second.png"], bytes);
+    await page.locator(".section-toggle").last().click();
+    await newSection(page, "Empty");
+    await newTab(page, "Destination");
+    await page.locator(".tab").filter({ hasText: "My inspiration" }).click();
+    const before = await snapshot(page), original = before.state.tabs.find(tab => tab.name === "My inspiration").sections.slice(0, 2);
+    await page.getByRole("checkbox", { name: "Select section Second", exact: true }).check();
+    await page.getByRole("checkbox", { name: "Select section The little things", exact: true }).check();
+    await expect(page.locator("#selection-count")).toHaveText("2 sections selected");
+    await expect(page.locator("#selection-bar")).toHaveAttribute("aria-label", "Selected section actions");
+    await expect(page.locator("#select-section")).toBeHidden();
+    await page.getByRole("button", { name: "Copy selected sections", exact: true }).click();
+    await page.locator("#editor [name=tab]").selectOption({ label: "Destination" }); await saveDialog(page);
+    const copied = await snapshot(page), destination = copied.state.tabs.find(tab => tab.name === "Destination");
+    expect(destination.sections.map(section => section.name)).toEqual(["The little things", "Second"]);
+    for (let i = 0; i < 2; i++) {
+      expect(destination.sections[i].id).not.toBe(original[i].id);
+      expect(destination.sections[i].collapsed).toBe(original[i].collapsed);
+      expect(destination.sections[i].items.map(item => item.assetId)).toEqual(original[i].items.map(item => item.assetId));
+      expect(destination.sections[i].items.every(item => !original[i].items.some(source => source.id === item.id))).toBe(true);
+    }
+    expect(copied.assets).toHaveLength(3);
+    await page.getByRole("checkbox", { name: "Select section Second", exact: true }).check();
+    await page.getByRole("checkbox", { name: "Select section The little things", exact: true }).check();
+    await page.getByRole("button", { name: "Move selected sections", exact: true }).click();
+    await page.locator("#editor [name=tab]").selectOption({ label: "Destination" });
+    await page.locator("#editor [name=position]").fill("2"); await saveDialog(page);
+    const moved = await snapshot(page), target = moved.state.tabs.find(tab => tab.name === "Destination");
+    expect(target.sections.slice(1, 3).map(section => section.id)).toEqual(original.map(section => section.id));
+    expect(moved.state.tabs.find(tab => tab.name === "My inspiration").sections.map(section => section.name)).toEqual(["Empty"]);
+    await page.locator(".tab").filter({ hasText: "Destination" }).click();
+    for (const section of original) await page.locator(`.section[data-section-id="${section.id}"] .select-section`).check();
+    await page.locator("#delete-selected").click();
+    await expect(page.locator("#delete-warning-message")).toContainText("2 sections and their 3 images");
+    await page.locator("#delete-warning-submit").click();
+    await expect(page.locator(".section")).toHaveCount(2);
+    expect((await snapshot(page)).assets).toHaveLength(3);
+    await page.locator(".select-section").first().check(); await page.locator("#select-all").click();
+    await page.locator("#delete-selected").click(); await page.locator("#delete-warning-submit").click();
+    await expect(page.locator(".section")).toHaveCount(0);
+    await expect(page.locator("#selection-bar")).toBeHidden();
+    expect((await snapshot(page)).assets).toHaveLength(0);
+  });
+
+  test("section deletion shares the warning allowance with images and selections switch cleanly", async ({ page }) => {
+    await ready(page);
+    for (const name of ["B", "C", "D", "Keep"]) await newSection(page, name);
+    await page.getByRole("button", { name: "Paste at end of Keep", exact: true }).click();
+    await upload(page, ["keep.png"], await png(page));
+    await page.getByRole("checkbox", { name: "Select keep.png", exact: true }).check();
+    await page.getByRole("checkbox", { name: "Select section The little things", exact: true }).check();
+    await expect(page.getByRole("checkbox", { name: "Select keep.png", exact: true })).not.toBeChecked();
+    await page.getByRole("checkbox", { name: "Select section B", exact: true }).check();
+    await page.keyboard.press("Delete");
+    await page.locator("#delete-warning-cancel").click();
+    await expect(page.locator(".section")).toHaveCount(5);
+    await page.locator("#delete-selected").click(); await page.locator("#delete-skip").fill("1");
+    await page.locator("#delete-warning-submit").click(); await expect(page.locator(".section")).toHaveCount(3);
+    await page.getByRole("checkbox", { name: "Select section C", exact: true }).check();
+    await page.getByRole("checkbox", { name: "Select section D", exact: true }).check();
+    await page.locator("#delete-selected").click(); await expect(page.locator(".section")).toHaveCount(1);
+    await expect(page.locator("#delete-warning")).toBeHidden();
+    await page.getByRole("checkbox", { name: "Select section Keep", exact: true }).check();
+    await page.getByRole("checkbox", { name: "Select keep.png", exact: true }).check();
+    await expect(page.getByRole("checkbox", { name: "Select section Keep", exact: true })).not.toBeChecked();
+    await expect(page.locator("#selection-count")).toHaveText("1 selected");
+    await page.locator("#delete-selected").click(); await expect(page.locator("#delete-warning")).toBeVisible();
+    await page.locator("#delete-warning-cancel").click(); await page.keyboard.press("Escape");
+    await expect(page.locator("#selection-bar")).toBeHidden();
+  });
+
+  test("headers are compact and stable; only section titles and chevrons collapse sections", async ({ page }) => {
+    await ready(page); await upload(page, ["geometry.png"], await png(page));
+    for (const width of [320, 390, 768, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect((await page.locator(".tabs-row").boundingBox()).height).toBe(50);
+      expect((await page.locator(".board-toolbar").boundingBox()).height).toBe(50);
+      const header = await page.locator(".section-header").boundingBox(), image = await page.locator(".image-card").boundingBox();
+      await page.mouse.move(image.x + 10, image.y + 10);
+      expect((await page.locator(".section-header").boundingBox()).height).toBe(header.height);
+      expect((await page.locator(".image-card").boundingBox()).y).toBe(image.y);
+      await page.locator(".section-count").click(); await expect(page.locator(".section")).not.toHaveClass(/collapsed/);
+      const count = await page.locator(".section-count").boundingBox();
+      await page.mouse.click(count.x + count.width + 3, count.y + count.height / 2);
+      await expect(page.locator(".section")).not.toHaveClass(/collapsed/);
+      await page.locator(".section-toggle strong").click(); await expect(page.locator(".section")).toHaveClass(/collapsed/);
+      await page.locator(".select-section").check(); await expect(page.locator(".section")).toHaveClass(/collapsed/);
+      await page.locator("#clear-selection").click();
+      await page.locator(".section-toggle .chevron").click(); await expect(page.locator(".section")).not.toHaveClass(/collapsed/);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    }
+  });
+
+  test("card spacing controls change real gaps in every layout and persist offline", async ({ page, browser }, testInfo) => {
+    await ready(page); await page.setViewportSize({ width: 900, height: 900 });
+    await upload(page, ["gap-a.png", "gap-b.png", "gap-c.png", "gap-d.png"], await png(page));
+    await page.locator("#increase-spacing").click();
+    await expect.poll(async () => (await snapshot(page)).state.settings.spacing).toBe(20);
+    for (const mode of ["masonry", "grid", "list"]) {
+      await page.locator(`button[data-layout=${mode}]`).click();
+      await expect.poll(() => page.locator(".image-card").evaluateAll(cards => {
+        const boxes = cards.map(card => card.getBoundingClientRect());
+        const sameRow = boxes.slice(1).find(box => Math.abs(box.y - boxes[0].y) < 1);
+        return sameRow ? Math.round(sameRow.x - boxes[0].right) : Math.round(boxes[1].y - boxes[0].bottom);
+      })).toBe(20);
+    }
+    await page.reload(); await expect(page.locator("#card-spacing")).toHaveAttribute("title", "Card spacing: 20px");
+    for (let i = 0; i < 10; i++) { await page.locator("#decrease-spacing").click(); await expect.poll(async () => (await snapshot(page)).state.settings.spacing).toBe(18 - i * 2); }
+    await expect(page.locator("#decrease-spacing")).toBeDisabled();
+    const event = page.waitForEvent("download"); await page.locator("#save-portable").click();
+    const output = testInfo.outputPath("spacing-offline.html"); await (await event).saveAs(output);
+    const offline = await browser.newContext({ offline: true }), reader = await offline.newPage();
+    await reader.goto(pathToFileURL(output).href);
+    await expect(reader.locator("#card-spacing")).toHaveAttribute("title", "Card spacing: 0px");
+    await reader.locator("#increase-spacing").click(); await expect(reader.locator("#card-spacing")).toHaveAttribute("title", "Card spacing: 2px");
+    await offline.close();
+  });
+
+  test("selection rectangles start on outer board padding and paste gaps without changing paste clicks", async ({ page }) => {
+    await ready(page); await page.setViewportSize({ width: 900, height: 900 });
+    await upload(page, ["edge-a.png", "edge-b.png", "edge-c.png"], await png(page, 120, 160));
+    await expect(page.locator(".image-card")).toHaveCount(3);
+    await page.locator('button[data-layout=grid]').click();
+    const first = await page.locator(".image-card").first().boundingBox();
+    await page.mouse.move(2, first.y + 5); await page.mouse.down();
+    await page.mouse.move(first.x + first.width / 2, first.y + first.height / 2, { steps: 8 }); await page.mouse.up();
+    await expect(page.locator("#selection-count")).toHaveText("1 selected");
+    await page.locator("#clear-selection").click();
+    await page.getByRole("button", { name: "Paste before edge-b.png", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Paste before edge-b.png", exact: true })).toHaveClass(/chosen/);
+    const gap = await page.getByRole("button", { name: "Paste before edge-b.png", exact: true }).boundingBox();
+    const second = await page.locator(".image-card").nth(1).boundingBox();
+    await page.mouse.move(gap.x + gap.width / 2, gap.y + gap.height / 2); await page.mouse.down();
+    await page.mouse.move(second.x + second.width / 2, second.y + second.height / 2, { steps: 8 }); await page.mouse.up();
+    await expect(page.locator("#selection-count")).toHaveText("1 selected");
+    await expect(page.locator(".image-card").nth(1).locator(".select-image")).toBeChecked();
+  });
+test("section upload follows its checkbox and uses the same 20px header icon", async ({ page }) => {
+  await ready(page); await newSection(page, "Upload target");
+  const section = page.locator(".section").last();
+  expect(await section.locator(".section-actions").evaluate(node => [...node.children].map(child => child.className))).toEqual(["section-selection", "icon-button section-upload", "icon-button"]);
+  const uploadIcon = section.locator(".section-upload svg");
+  expect(await uploadIcon.boundingBox()).toMatchObject({ width: 20, height: 20 });
+  expect(await uploadIcon.innerHTML()).toBe(await page.locator("#add-images svg").innerHTML());
+  const picker = page.waitForEvent("filechooser");
+  await section.locator(".section-upload").click();
+  await (await picker).setFiles({ name: "target.png", mimeType: "image/png", buffer: await png(page) });
+  await expect(section.locator(".image-card")).toHaveCount(1);
+  expect((await snapshot(page)).state.tabs[0].sections[1].items[0].title).toBe("target.png");
 });
 
 test("mouse hold-drag reorders groups and rectangle selects multiple images", async ({ page }) => {
@@ -966,7 +1129,7 @@ test("Caption switches persist and source icon links remain independent of capti
     await page.locator("#more").click();
     await expect(page.locator("#editor-fields > .settings-manage").first().getByRole("heading", { name: "Manage", exact: true })).toBeVisible();
     await expect(page.locator("#editor [name=theme]")).toHaveCount(0);
-    await expect(page.locator("#editor-extra").locator(":scope > *").last().locator("[name=accent]")).toHaveCount(1);
+    await expect(page.locator("#editor-extra").locator(":scope > *").nth(-2).locator("[name=accent]")).toHaveCount(1);
     await expect(page.getByRole("switch", { name: "Show captions", exact: true })).not.toBeChecked();
     await page.getByRole("switch", { name: "Show captions", exact: true }).check();
     await page.getByRole("switch", { name: "Show filenames", exact: true }).check();
@@ -1082,6 +1245,7 @@ test("header controls are compact and Manage precedes captions without the remov
   for (const width of [320, 390, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await expect(page.locator("#save-status")).toBeVisible();
+    expect((await page.locator(".app-header").boundingBox()).height).toBe(50);
     const upload = await page.locator("#add-images").boundingBox(), status = await page.locator("#save-status").boundingBox(), save = await page.locator("#save-portable").boundingBox();
     expect(status.x).toBeGreaterThanOrEqual(upload.x + upload.width);
     expect(save.x).toBeGreaterThanOrEqual(status.x + status.width);
@@ -1139,7 +1303,7 @@ test("local menu keeps GitHub controls visible but disabled, with offline backup
   for (const action of await page.locator(".github-action").all()) await expect(action).toBeDisabled();
   await expect(page.locator("#coupon-code")).toHaveValue("l33thelper");
   await expect(page.locator("#copy-coupon")).toBeEnabled();
-  expect(await page.locator(".coupon-code").evaluate(node => node.nextElementSibling.classList.contains("destructive-actions"))).toBe(true);
+  expect(await page.locator(".coupon-code").evaluate(node => node.parentElement.id === "editor-extra" && node === node.parentElement.lastElementChild)).toBe(true);
 });
 
 test("public coupon is copyable offline while actual GitHub credentials stay out of storage and exports", async ({ page, browser }, testInfo) => {
@@ -1152,7 +1316,7 @@ test("public coupon is copyable offline while actual GitHub credentials stay out
     await client.page.locator("#more").click();
     const token = client.page.locator("#coupon-code"), copy = client.page.locator("#copy-coupon");
     await expect(token).toHaveAttribute("type", "text");
-    await expect(token).toHaveAttribute("readonly", "");
+    await expect(token).toBeEditable();
     await expect(token).toHaveValue("l33thelper");
     expect(await token.getAttribute("name")).toBeNull();
     expect(await client.page.evaluate(() => new FormData(document.querySelector("#editor-form")).has("coupon"))).toBe(false);
@@ -1182,6 +1346,61 @@ test("public coupon is copyable offline while actual GitHub credentials stay out
     await client.page.locator("#more").click();
     await expect(token).toHaveValue("l33thelper"); await expect(copy).toBeEnabled();
     const icon = await copy.locator("svg").boundingBox(); expect(icon.width).toBe(20); expect(icon.height).toBe(20);
+  } finally { await shared.close(); }
+});
+
+test("editable coupon saves to GitHub, other devices, backups and portable HTML, including queued offline edits", async ({ page, browser }, testInfo) => {
+  const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
+  try {
+    const client = await shared.open({ authenticated: true });
+    await client.page.locator("#more").click();
+    await client.page.locator("#coupon-code").fill("SUMMER20");
+    await client.page.locator("#save-coupon").click();
+    await expect(client.page.locator("#editor")).not.toBeVisible();
+    await expect.poll(() => shared.record.board.state.settings.couponCode).toBe("SUMMER20");
+    const other = await shared.open({ viewport: { width: 320, height: 800 } });
+    await other.page.locator("#more").click();
+    await expect(other.page.locator("#coupon-code")).toHaveValue("SUMMER20");
+    const copy = await other.page.locator("#copy-coupon").boundingBox(), save = await other.page.locator("#save-coupon").boundingBox();
+    expect(save.x).toBeGreaterThan(copy.x); expect(save.y).toBe(copy.y);
+    expect(await other.page.locator("#save-coupon svg").boundingBox()).toMatchObject({ width: 20, height: 20 });
+    await other.page.locator("#coupon-code").fill("Not synced yet");
+    await other.page.locator("#save-coupon").click();
+    await expect(other.page.locator("#save-status .auto-sync-link")).toBeVisible();
+    for (const width of [320, 390, 768, 1440]) {
+      await other.page.setViewportSize({ width, height: 800 });
+      expect((await other.page.locator(".app-header").boundingBox()).height).toBe(50);
+      await expect(other.page.locator("#save-status .auto-sync-link")).toHaveCSS("white-space", "nowrap");
+      const bounds = await other.page.locator("#save-status .auto-sync-link").boundingBox();
+      const portableBounds = await other.page.locator("#save-portable").boundingBox();
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(portableBounds.x);
+      expect(bounds.height).toBeLessThanOrEqual(14);
+      expect(await other.page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    }
+    await client.context.setOffline(true);
+    await client.page.locator("#more").click();
+    await client.page.locator("#coupon-code").fill("OFFLINE25");
+    await client.page.locator("#save-coupon").click();
+    await expect.poll(async () => (await snapshot(client.page)).state.settings.couponCode).toBe("OFFLINE25");
+    expect(shared.record.board.state.settings.couponCode).toBe("SUMMER20");
+    await client.page.locator("#more").click();
+    const downloaded = client.page.waitForEvent("download");
+    await client.page.getByRole("button", { name: "Export JSON backup", exact: true }).click();
+    const backup = testInfo.outputPath("saved-coupon.json"); await (await downloaded).saveAs(backup);
+    expect(JSON.parse(fs.readFileSync(backup, "utf8")).state.settings.couponCode).toBe("OFFLINE25");
+    const portableEvent = client.page.waitForEvent("download");
+    await client.page.locator("#save-portable").evaluate(node => node.click());
+    const portable = testInfo.outputPath("saved-coupon.html"); await (await portableEvent).saveAs(portable);
+    expect(fs.readFileSync(portable, "utf8")).toContain('"couponCode":"OFFLINE25"');
+    await client.page.locator("#cancel-editor").click();
+    await client.context.setOffline(false);
+    await expect.poll(() => shared.record.board.state.settings.couponCode).toBe("OFFLINE25");
+    await client.page.reload(); await client.page.locator("#more").click();
+    await expect(client.page.locator("#coupon-code")).toHaveValue("OFFLINE25");
+    await client.page.locator("#coupon-code").fill("github_pat_" + "x".repeat(30));
+    await client.page.locator("#save-coupon").click();
+    await expect(client.page.locator("#notice")).toContainText("cannot contain GitHub access tokens");
+    expect(shared.record.board.state.settings.couponCode).toBe("OFFLINE25");
   } finally { await shared.close(); }
 });
 
@@ -1332,10 +1551,12 @@ test("tabs and layout controls form a shy sticky header that returns on upward s
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.evaluate(() => scrollTo(0, 500));
     await expect(header).toHaveClass(/shy-hidden/);
+    await expect(page.locator(".app-header")).toHaveClass(/shy-hidden/);
     await page.evaluate(() => scrollTo(0, 400));
     await expect(header).not.toHaveClass(/shy-hidden/);
+    await expect(page.locator(".app-header")).not.toHaveClass(/shy-hidden/);
     await expect(header).toHaveCSS("transform", "none");
-    expect((await header.boundingBox()).y).toBeCloseTo(0, 0);
+    expect((await header.boundingBox()).y).toBeCloseTo(50, 0);
     await page.evaluate(() => scrollTo(0, 700)); await expect(header).toHaveClass(/shy-hidden/);
     await page.getByRole("button", { name: "Grid", exact: true }).focus();
     await expect(header).not.toHaveClass(/shy-hidden/);
