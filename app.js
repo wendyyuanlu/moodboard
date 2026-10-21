@@ -54,6 +54,24 @@
   function sizeText(size) {
     return size < 1024 * 1024 ? `${Math.round(size / 1024)} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`;
   }
+  function sourcePageURL(value) {
+    if (typeof value !== "string" || value.length > 8192) return "";
+    try {
+      const url = new URL(value.trim());
+      return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : "";
+    } catch { return ""; }
+  }
+  function clipboardSourcePage(html) {
+    const header = html.match(/(?:^|[\r\n])SourceURL:\s*([^\r\n]+)/i);
+    const fromHeader = sourcePageURL(header?.[1]);
+    if (fromHeader) return fromHeader;
+    // Template contents stay inert; never attach clipboard HTML to the page.
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    const canonical = template.content.querySelector('link[rel~="canonical"][href]');
+    const openGraph = template.content.querySelector('meta[property="og:url"][content]');
+    return sourcePageURL(canonical?.getAttribute("href")) || sourcePageURL(openGraph?.getAttribute("content"));
+  }
   function initialState() {
     const tabId = uid();
     return { schema: 1, id: uid(), revision: 0, activeTab: tabId, settings: { layout: "masonry", zoom: matchMedia("(max-width: 600px)").matches ? 150 : 220, theme: "light", accent: "#637554" },
@@ -73,6 +91,7 @@
         unique(section.id);
         for (const item of section.items) {
           if (!item || !text(item.title, 300, true) || !text(item.notes, 10000) || !assetMap.has(item.assetId)) fail();
+          if (item.sourceUrl !== undefined && (!text(item.sourceUrl, 8192) || (item.sourceUrl !== "" && !sourcePageURL(item.sourceUrl)))) fail();
           unique(item.id);
         }
       }
@@ -191,6 +210,47 @@
     $("#selection-bar").hidden = !editable || !selection.size;
     $("#selection-count").textContent = `${selection.size} selected`;
   }
+  function createTabControl(tabId) {
+    const control = button("", () => { if (!editor.open) switchTab(tabId); }, "tab");
+    control.dataset.tabId = tabId;
+    control.append(el("span", "tab-name"), el("small"));
+    const edit = () => {
+      if (editable && control.isConnected && !editor.open) openTab(state.tabs.find((tab) => tab.id === tabId));
+    };
+    control.addEventListener("dblclick", (event) => { event.preventDefault(); edit(); });
+    control.addEventListener("keydown", (event) => { if (event.key === "F2") { event.preventDefault(); edit(); } });
+    let holdTimer, start;
+    const cancelHold = () => { clearTimeout(holdTimer); start = null; };
+    control.addEventListener("pointerdown", (event) => {
+      cancelHold();
+      if (event.pointerType !== "touch" || !editable) return;
+      start = { x: event.clientX, y: event.clientY };
+      holdTimer = setTimeout(edit, 500);
+    });
+    control.addEventListener("pointermove", (event) => {
+      if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) cancelHold();
+    });
+    for (const type of ["pointerup", "pointercancel", "pointerleave"]) control.addEventListener(type, cancelHold);
+    control.addEventListener("contextmenu", (event) => { if (editable) event.preventDefault(); });
+    return control;
+  }
+  function renderTabs() {
+    const container = $("#tabs");
+    const existing = new Map($$(".tab", container).map((control) => [control.dataset.tabId, control]));
+    const desired = state.tabs.map((tab) => {
+      const control = existing.get(tab.id) || createTabControl(tab.id);
+      $(".tab-name", control).textContent = tab.name;
+      $("small", control).textContent = tab.sections.reduce((count, section) => count + section.items.length, 0);
+      control.setAttribute("aria-current", String(tab.id === state.activeTab));
+      control.title = editable ? "Double-click to edit · F2 · touch and hold" : tab.name;
+      if (editable) control.setAttribute("aria-keyshortcuts", "F2"); else control.removeAttribute("aria-keyshortcuts");
+      return control;
+    });
+    for (const control of existing.values()) if (!desired.includes(control)) control.remove();
+    desired.forEach((control, index) => {
+      if (container.children[index] !== control) container.insertBefore(control, container.children[index] || null);
+    });
+  }
   function render() {
     const current = activeTab();
     document.body.dataset.theme = state.settings.theme;
@@ -198,22 +258,14 @@
     document.documentElement.style.setProperty("--accent", state.settings.accent);
     document.documentElement.style.setProperty("--tile-size", `${state.settings.zoom}px`);
     $("#zoom").value = state.settings.zoom;
-    $("#edit-toggle").textContent = editable ? "Edit on" : "Edit off";
+    $("#edit-toggle").setAttribute("aria-label", editable ? "Turn editing off" : "Turn editing on");
+    $("#edit-toggle").title = editable ? "Editing on — click to turn off" : "Editing off — click to turn on";
     $("#edit-toggle").setAttribute("aria-pressed", String(editable));
     $("#add-images").disabled = !editable;
     for (const control of $$("[data-layout]")) {
       if (control.tagName === "BUTTON") control.setAttribute("aria-pressed", String(control.dataset.layout === state.settings.layout));
     }
-    $("#tabs").replaceChildren(...state.tabs.map((tab) => {
-      const control = button(tab.name, () => switchTab(tab.id), "tab");
-      control.dataset.tabId = tab.id;
-      control.setAttribute("aria-current", String(tab.id === state.activeTab));
-      control.append(el("small", "", String(tab.sections.reduce((count, section) => count + section.items.length, 0))));
-      return control;
-    }));
-    $("#board-title").textContent = current.name;
-    const count = tabItems().length;
-    $("#image-count").textContent = `${count} ${count === 1 ? "image" : "images"}`;
+    renderTabs();
     masonryObserver.disconnect();
     $("#sections").replaceChildren(...current.sections.map(renderSection));
     if (!current.sections.length) {
@@ -308,7 +360,13 @@
     const caption = el("div", "card-caption"); caption.append(el("h3", "", item.title));
     if (item.notes) caption.append(el("p", "", item.notes));
     caption.append(el("small", "card-meta", `${asset.width} × ${asset.height} · ${sizeText(asset.blob.size)}`));
-    hit.append(img, caption);
+    const sourceUrl = sourcePageURL(item.sourceUrl);
+    if (sourceUrl) {
+      const link = el("a", "source-link", sourceUrl);
+      link.href = sourceUrl; link.target = "_blank"; link.rel = "noopener noreferrer";
+      caption.append(link);
+    } else caption.append(el("span", "source-missing", "No source URL available"));
+    hit.append(img);
     const check = el("input", "select-image"); check.type = "checkbox";
     check.setAttribute("aria-label", `Select ${item.title}`);
     check.addEventListener("change", () => { if (check.checked) selection.add(item.id); else selection.delete(item.id); renderSelection(); });
@@ -317,9 +375,12 @@
       if (performance.now() >= suppressClickUntil) { selection.add(item.id); renderSelection(); notify("Hold and drag to rearrange, or use Move to… below."); }
     }, "card-tool drag-handle");
     drag.setAttribute("aria-label", `Drag ${item.title}`);
+    const remove = button("×", () => { removeItems([item.id]).catch(report); }, "card-tool danger");
+    remove.setAttribute("aria-label", `Delete image ${item.title}`);
+    remove.title = "Delete image";
     const edit = button("···", () => openImage(item.id), "card-tool");
     edit.setAttribute("aria-label", `Edit image ${item.title}`);
-    tools.append(drag, edit); card.append(hit, check, tools); tile.append(card);
+    tools.append(drag, remove, edit); card.append(hit, caption, check, tools); tile.append(card);
     return tile;
   }
   function switchTab(tabId) {
@@ -384,7 +445,7 @@
         if (next.activeTab === tab.id) next.activeTab = next.tabs[0].id;
       }));
     } : null);
-    nameField("Tab name", tab?.name || "");
+    const name = nameField("Tab name", tab?.name || ""); name.focus(); name.select();
     positionField(tab ? state.tabs.findIndex((entry) => entry.id === tab.id) + 1 : state.tabs.length + 1, state.tabs.length + (tab ? 0 : 1));
     hint("Change Position to move this tab. Duplicates include every section and image, with independent organization.");
     if (tab) $("#editor-extra").append(button("Duplicate tab", async () => {
@@ -447,12 +508,17 @@
     openEditor("The details", async (form) => {
       const title = form.get("title").trim();
       if (!title) throw new Error("Please enter an image title.");
+      const enteredSource = form.get("sourceUrl").trim();
+      const sourceUrl = sourcePageURL(enteredSource);
+      if (enteredSource && !sourceUrl) throw new Error("Use a full HTTP or HTTPS source page URL without a username or password.");
       await enqueue(() => commit((next) => {
-        const updated = { ...allItems(next).find((entry) => entry.id === itemId), title, notes: form.get("notes") };
+        const updated = { ...allItems(next).find((entry) => entry.id === itemId), title, notes: form.get("notes"), sourceUrl };
         transfer(next, [itemId], { sectionId: form.get("section"), index: Number(form.get("position")) - 1 }, false, [updated]);
       }));
     }, () => removeItems([itemId]));
     const title = field("Title / filename", "title", item.title); title.required = true; title.maxLength = 300;
+    const sourceUrl = field("Source page URL", "sourceUrl", item.sourceUrl || "", "url"); sourceUrl.maxLength = 8192;
+    hint("Saved automatically when the clipboard includes explicit page metadata. Screenshots and most copied images do not include it; paste the page address here to add or correct it.");
     const notes = field("Notes", "notes", item.notes, "textarea"); notes.maxLength = 10000;
     const section = field("Section", "section", source.id, "text", sectionOptions());
     positionField(source.items.findIndex((entry) => entry.id === itemId) + 1, source.items.length);
@@ -520,19 +586,20 @@
       throw new Error(`Could not read “${file.name || "pasted image"}”. Choose an image supported by this browser.`, { cause: error });
     } finally { URL.revokeObjectURL(url); }
   }
-  function addFiles(files, target = cursor && { ...cursor }) {
+  function addFiles(files, target = cursor && { ...cursor }, sourceUrls = []) {
     if (!editable) { notify("Turn Edit on to add images."); return; }
     const list = [...files];
     if (!list.length) { notify("No image files found. Copy an image or use Add images."); return; }
     enqueue(async () => {
       const additions = new Map(), items = [];
-      for (const file of list) {
+      for (const [index, file] of list.entries()) {
         const asset = await readImage(file), assetId = uid();
         additions.set(assetId, asset);
-        items.push({ id: uid(), assetId, title: asset.name.slice(0, 300), notes: "" });
+        items.push({ id: uid(), assetId, title: asset.name.slice(0, 300), notes: "", sourceUrl: sourceUrls[index] || "" });
       }
       await commit((next) => insertItems(next, items, target), additions);
-      notify(`${items.length} ${items.length === 1 ? "image" : "images"} added · original bytes preserved.`);
+      const linked = items.filter((item) => item.sourceUrl).length;
+      notify(`${items.length} ${items.length === 1 ? "image" : "images"} added · original bytes preserved.${linked ? ` ${linked} source ${linked === 1 ? "link" : "links"} saved.` : ""}`);
     }).catch(() => {});
   }
   function textTarget(target) {
@@ -542,7 +609,9 @@
     if (!state || textTarget(event.target) || editor.open || viewer.open) return;
     const files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
     if (files.length) {
-      event.preventDefault(); addFiles(files); return;
+      event.preventDefault();
+      const sourceUrl = clipboardSourcePage(event.clipboardData.getData("text/html"));
+      addFiles(files, cursor && { ...cursor }, files.map(() => sourceUrl)); return;
     }
     if (internalClipboard.length && editable && event.clipboardData?.getData("text/plain") === "moodboard image selection") {
       event.preventDefault(); pasteInternal();
@@ -557,12 +626,16 @@
     }
     try {
       const entries = await navigator.clipboard.read();
-      const files = [];
+      const images = [], pageSources = new Set();
       for (const entry of entries) {
+        const html = entry.types.includes("text/html") ? await (await entry.getType("text/html")).text() : "";
+        const sourceUrl = clipboardSourcePage(html);
+        if (sourceUrl) pageSources.add(sourceUrl);
         const type = entry.types.find((type) => supportedImage.test(type));
-        if (type) files.push(await entry.getType(type));
+        if (type) images.push({ file: await entry.getType(type), sourceUrl });
       }
-      if (files.length) addFiles(files, target);
+      const commonSource = pageSources.size === 1 ? [...pageSources][0] : "";
+      if (images.length) addFiles(images.map((image) => image.file), target, images.map((image) => image.sourceUrl || commonSource));
       else if (internalClipboard.length) pasteInternal();
       else notify("No image in the clipboard. Copy an image, then paste again, or use Add images.");
     } catch (error) {
@@ -603,6 +676,10 @@
     const image = $("#viewer-image"); image.src = url; image.alt = item.title;
     image.width = asset.width; image.height = asset.height;
     $("#viewer-original").href = url;
+    const sourceUrl = sourcePageURL(item.sourceUrl);
+    $("#viewer-source").hidden = !sourceUrl;
+    if (sourceUrl) $("#viewer-source").href = sourceUrl;
+    else $("#viewer-source").removeAttribute("href");
     $("#viewer-download").href = url; $("#viewer-download").download = asset.name;
     $("#viewer-position").textContent = `${viewIndex + 1} / ${viewItems.length}`;
     $("#viewer-prev").disabled = viewIndex === 0;
@@ -810,6 +887,7 @@
       for (const selector of ["#notice", "#selection-bar", "#drag-preview", "#rubber-band", "#storage-warning", "#editor-error"]) find(selector).hidden = true;
       find("#viewer-image").removeAttribute("src");
       find("#viewer-original").removeAttribute("href"); find("#viewer-download").removeAttribute("href");
+      find("#viewer-source").removeAttribute("href"); find("#viewer-source").hidden = true;
       find("#save-portable").removeAttribute("disabled"); find("#save-portable").textContent = "↓ Save portable copy";
       find("#save-status").textContent = "Opening your space…";
       html.querySelector("body").classList.remove("edit-off", "dragging");
@@ -832,11 +910,13 @@
     openEditor("Take your inspiration anywhere", null);
     const paragraphs = [
       ["Add quickly", "Press Ctrl+V / ⌘V anywhere outside a text field. Choose a “Paste here” gap first, or append at the bottom. Consecutive pastes keep their order. On mobile, try Paste or use Add images for your photo library."],
+      ["Source pages", "When the clipboard includes an explicit source-page URL or canonical page metadata, it is saved with the image. Image URLs are not mistaken for page URLs. Screenshots and most copied images omit the page address; add or correct it in the image’s details menu. Source page opens that link from the viewer. Links stay in offline saves and backups, but opening the source website requires internet."],
       ["Organize", "Use checkboxes to select, Shift-click for a range, or drag a rectangle from empty space on desktop. Hold an image to drag it; on phones the dotted grip is the most reliable drag target. Drop above/below another image or into a section. Hover a tab while dragging to switch tabs. Move to… provides an accessible alternative."],
+      ["Tabs & sections", "Double-click a tab to rename, reposition, duplicate, or delete it. You can also focus it and press F2, or touch and hold it on a phone. Editing must be on. Use a section’s dots menu to organize that section."],
       ["Save to computer or USB", "Save portable copy downloads a single HTML file containing the app, every original image, and your organization. Open it on a computer without internet. It is a snapshot: after editing, save a NEW portable copy. The app cannot silently rewrite files on your USB."],
       ["On your phone", "For reliable phone use, open the hosted HTTPS site while online, then use your browser’s Add to Home Screen / Install option and import a JSON backup. Open it once to finish caching before going offline. Mobile Files apps may only preview local HTML rather than run it; portable HTML is not a guaranteed phone installation method."],
       ["Offline & storage", "There are no external fonts, images, or runtime libraries. Uploaded/pasted image bytes are never resized or compressed. Browser storage stays on this device and can be cleared by the browser, so keep backups. Copies do not synchronize automatically. Private browsing may discard storage. Very large collections require substantial device memory during export."],
-      ["Selection & editing", "Edit on is the default each time you open the app. Edit off protects against accidental changes. Click an image to open the original-resolution viewer. Use arrows or swipe to browse; Actual size allows panning. Copy to… duplicates images between sections/tabs; Ctrl+C / ⌘C and paste also work within the open app."],
+      ["Selection & editing", "Editing is on by default each time the app opens. Use the pencil beside Masonry/Grid/List to toggle editing. Turning it off protects against accidental changes. Click an image to open the original-resolution viewer. Use arrows or swipe to browse; Actual size allows panning. Copy to… duplicates images between sections/tabs; Ctrl+C / ⌘C and paste also work within the open app."],
       ["Before your flight", "Import or paste your images, save a portable copy AND a JSON backup, then test the app in airplane mode on the device you’ll use. An offline installation is ready only when the status says “Offline ready”."]
     ];
     for (const [title, text] of paragraphs) {
@@ -902,7 +982,6 @@
   $("#more").addEventListener("click", () => { if (state) settings(); });
   $("#help").addEventListener("click", guide);
   $("#new-tab").addEventListener("click", () => openTab());
-  $("#tab-options").addEventListener("click", () => openTab(activeTab()));
   $("#new-section").addEventListener("click", () => openSection());
   $("#bottom-add").addEventListener("click", () => openSection());
   $("#add-images").addEventListener("click", () => $("#image-files").click());

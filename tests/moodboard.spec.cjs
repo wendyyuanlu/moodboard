@@ -21,18 +21,24 @@ async function upload(page, names, buffer) {
   await page.locator("#image-files").setInputFiles(names.map((name) => file(name, buffer)));
   await expect(page.locator("#save-status")).toHaveText("Saved on this device");
 }
-async function paste(page, names, buffer) {
-  await page.evaluate(({ names, bytes }) => {
+async function paste(page, names, buffer, html = "") {
+  await page.evaluate(({ names, bytes, html }) => {
     const transfer = new DataTransfer();
+    if (html) transfer.setData("text/html", html);
     for (const name of names) transfer.items.add(new File([new Uint8Array(bytes)], name, { type: "image/png" }));
     document.body.dispatchEvent(new ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, cancelable: true }));
-  }, { names, bytes: [...buffer] });
+  }, { names, bytes: [...buffer], html });
 }
 async function titles(page) { return page.locator(".card-caption h3").allTextContents(); }
 async function saveDialog(page) {
   await page.locator("#editor-submit").click();
   await expect(page.locator("#editor")).not.toBeVisible();
 }
+async function editTab(page) {
+  await page.locator(".tab[aria-current=true]").dblclick();
+  await expect(page.locator("#editor")).toBeVisible();
+}
+function tabTitle(page) { return page.locator(".tab[aria-current=true] .tab-name"); }
 async function newSection(page, name) {
   await page.locator("#new-section").click();
   await page.locator("#editor [name=name]").fill(name);
@@ -59,7 +65,10 @@ test("rapid paste positions, original bytes, full-size viewer and portable offli
   const buffer = await png(page, 1920, 1080);
   await upload(page, ["A.png", "B.png"], buffer);
   await expect(page.locator(".image-card")).toHaveCount(2);
-  await expect(page.locator(".card-caption").first()).toBeHidden();
+  await expect(page.locator(".card-caption").first()).toBeVisible();
+  await expect(page.locator(".card-caption h3").first()).toBeHidden();
+  await expect(page.locator(".card-meta").first()).toBeHidden();
+  await expect(page.locator(".source-missing").first()).toHaveText("No source URL available");
   await expect(page.locator(".card-caption h3").first()).toHaveText("A.png");
   await expect(page.locator(".card-meta").first()).toContainText("1920 × 1080");
   await page.getByRole("button", { name: "Paste before B.png", exact: true }).click();
@@ -110,11 +119,11 @@ test("rapid paste positions, original bytes, full-size viewer and portable offli
 test("tabs and sections rename, duplicate, reorder, move, collapse and delete", async ({ page }) => {
   await ready(page);
   await upload(page, ["original.png"], await png(page));
-  await page.locator("#tab-options").click();
+  await editTab(page);
   await page.getByRole("button", { name: "Duplicate tab", exact: true }).click();
   await expect(page.locator(".tab")).toHaveCount(2);
   await expect(page.locator(".image-card")).toHaveCount(1);
-  await page.locator("#tab-options").click();
+  await editTab(page);
   await page.locator("#editor [name=name]").fill("Travel");
   await page.locator("#editor [name=position]").fill("1");
   await saveDialog(page);
@@ -135,18 +144,18 @@ test("tabs and sections rename, duplicate, reorder, move, collapse and delete", 
   await page.getByRole("button", { name: "Edit section Favorites", exact: true }).click();
   await page.locator("#editor [name=tab]").selectOption({ label: "My inspiration" });
   await saveDialog(page);
-  await expect(page.locator("#board-title")).toHaveText("My inspiration");
+  await expect(tabTitle(page)).toHaveText("My inspiration");
   await expect(page.locator(".section")).toHaveCount(2);
   await page.getByRole("button", { name: "Edit section Favorites", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#editor-delete").click();
   await expect(page.locator("#editor")).not.toBeVisible();
   await expect(page.locator(".section")).toHaveCount(1);
-  await page.locator("#tab-options").click();
+  await editTab(page);
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#editor-delete").click();
   await expect(page.locator(".tab")).toHaveCount(1);
-  await expect(page.locator("#board-title")).toHaveText("Travel");
+  await expect(tabTitle(page)).toHaveText("Travel");
   expect((await snapshot(page)).assets).toHaveLength(1);
 });
 
@@ -173,13 +182,13 @@ test("bulk copy/move, keyboard copy, image editing and edit-off protection", asy
   await saveDialog(page);
   await expect(page.locator(".section").first().locator("h3")).toHaveText("A calmer morning");
   await page.locator("#edit-toggle").click();
-  await expect(page.locator("#edit-toggle")).toHaveText("Edit off");
+  await expect(page.locator("#edit-toggle")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator(".select-image").first()).not.toBeVisible();
   await paste(page, ["blocked.png"], buffer);
   await expect(page.locator(".image-card")).toHaveCount(5);
   await page.getByRole("button", { name: "Open original image: A calmer morning", exact: true }).click();
   await expect(page.locator("#viewer")).toBeVisible(); await page.locator("#viewer-close").click();
-  await page.reload(); await expect(page.locator("#edit-toggle")).toHaveText("Edit on");
+  await page.reload(); await expect(page.locator("#edit-toggle")).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("checkbox", { name: "Select A calmer morning", exact: true }).check();
   await page.evaluate(() => {
     const data = new DataTransfer();
@@ -273,7 +282,9 @@ test("mobile layouts and zoom are responsive; touch hold-drag and swipe viewer",
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: rect.x + 50, y: rect.y + 35 }] });
   await page.waitForTimeout(520);
   await expect(page.locator("#drag-preview")).toBeVisible();
-  const before = await page.getByRole("button", { name: "Paste before landscape.png", exact: true }).boundingBox();
+  const beforeControl = page.getByRole("button", { name: "Paste before landscape.png", exact: true });
+  await beforeControl.evaluate((node) => node.scrollIntoView({ block: "center" }));
+  const before = await beforeControl.boundingBox();
   await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: before.x + 30, y: before.y + 10 }] });
   await page.waitForTimeout(100);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
@@ -323,11 +334,11 @@ test("a stale window cannot overwrite a newer save", async ({ page, context }) =
 
 test("dragging across tabs moves originals and keeps the source collection intact", async ({ page }) => {
   await ready(page); await upload(page, ["A.png", "B.png"], await png(page));
-  await page.locator("#tab-options").click();
+  await editTab(page);
   await page.getByRole("button", { name: "Duplicate tab", exact: true }).click();
   await expect(page.locator(".tab")).toHaveCount(2);
   await page.locator(".tab").first().click();
-  await expect(page.locator("#board-title")).toHaveText("My inspiration");
+  await expect(tabTitle(page)).toHaveText("My inspiration");
   await expect(page.locator("#save-status")).toHaveText("Saved on this device");
   await page.getByRole("checkbox", { name: "Select A.png", exact: true }).check();
   const source = await page.getByRole("button", { name: "Drag A.png", exact: true }).boundingBox();
@@ -336,7 +347,7 @@ test("dragging across tabs moves originals and keeps the source collection intac
   await page.locator(".tab").last().evaluate((node) => node.scrollIntoView({ block: "center" }));
   const tab = await page.locator(".tab").last().boundingBox();
   await page.mouse.move(tab.x + 20, tab.y + 15, { steps: 8 });
-  await expect(page.locator("#board-title")).toHaveText("My inspiration (copy)");
+  await expect(tabTitle(page)).toHaveText("My inspiration (copy)");
   await page.getByRole("button", { name: "Paste at end of The little things", exact: true }).evaluate((node) => node.scrollIntoView({ block: "center" }));
   const target = await page.getByRole("button", { name: "Paste at end of The little things", exact: true }).boundingBox();
   await page.mouse.move(target.x + 20, target.y + 15, { steps: 8 });
@@ -439,4 +450,172 @@ test("hover-only desktop checkboxes and masonry fill horizontally across the ent
   await page.locator("#zoom").evaluate((slider) => slider.dispatchEvent(new Event("change", { bubbles: true })));
   await expect.poll(async () => (await snapshot(page)).state.settings.zoom).toBe(420);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("pasted source pages appear below images, open separately, and can be corrected", async ({ page, context }) => {
+  await ready(page); const buffer = await png(page);
+  const requests = [];
+  await context.route("https://provenance.test/**", async (route) => {
+    requests.push(route.request().url());
+    await route.fulfill({ status: 200, contentType: "text/html", body: "<title>Original inspiration page</title>" });
+  });
+  const source = "https://provenance.test/ideas/quiet-room?color=green&shape=arch";
+  await paste(page, ["linked.png"], buffer, `Version:1.0\r\nSourceURL:${source}\r\n<html><body><img src="https://provenance.test/image.png" onerror="window.clipboardExecuted=true"></body></html>`);
+  await expect(page.locator(".source-link")).toHaveText(source);
+  await expect(page.locator(".source-link")).toHaveAttribute("href", source);
+  await expect(page.locator(".source-link")).toHaveAttribute("rel", "noopener noreferrer");
+  expect(await page.locator(".source-link").evaluate((link) => link.closest("button"))).toBeNull();
+  expect(requests).toEqual([]);
+  expect(await page.evaluate(() => window.clipboardExecuted)).toBeUndefined();
+  const popupEvent = page.waitForEvent("popup"); await page.locator(".source-link").click();
+  const popup = await popupEvent; await popup.waitForLoadState();
+  expect(popup.url()).toBe(source); await popup.close();
+  await expect(page.locator("#viewer")).not.toBeVisible();
+  await paste(page, ["screenshot.png"], buffer, '<a href="https://provenance.test/not-necessarily-the-source"><img src="https://provenance.test/direct-image.png"></a>');
+  await expect(page.locator(".image-card")).toHaveCount(2);
+  await expect(page.locator(".source-missing")).toHaveText("No source URL available");
+  await page.getByRole("button", { name: "Open original image: linked.png", exact: true }).click();
+  await expect(page.locator("#viewer-source")).toBeVisible();
+  await expect(page.locator("#viewer-source")).toHaveAttribute("href", source);
+  await page.locator("#viewer-next").click();
+  await expect(page.locator("#viewer-source")).toBeHidden();
+  await expect(page.locator("#viewer-source")).not.toHaveAttribute("href");
+  await page.locator("#viewer-close").click();
+  await page.getByRole("button", { name: "Edit image screenshot.png", exact: true }).click();
+  await page.locator("#editor [name=sourceUrl]").fill("javascript:alert(1)");
+  await page.locator("#editor-submit").click();
+  await expect(page.locator("#editor-error")).toContainText("HTTP or HTTPS");
+  await page.locator("#editor [name=sourceUrl]").fill("https://provenance.test/manual-source");
+  await saveDialog(page);
+  await expect(page.locator(".source-link").last()).toHaveAttribute("href", "https://provenance.test/manual-source");
+  await page.reload();
+  await expect(page.locator(".source-link")).toHaveCount(2);
+  const saved = await snapshot(page);
+  expect(saved.state.tabs[0].sections[0].items.map((item) => item.sourceUrl)).toEqual([source, "https://provenance.test/manual-source"]);
+  expect(requests).toEqual([source]);
+});
+
+test("Paste button reads explicit page metadata but rejects unsafe or inferred page links", async ({ page }) => {
+  await ready(page); const buffer = await png(page);
+  await page.evaluate((bytes) => {
+    const image = new Blob([new Uint8Array(bytes)], { type: "image/png" });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      read: async () => [
+        new ClipboardItem({ "image/png": image }),
+        new ClipboardItem({ "text/html": new Blob(['<link rel="canonical" href="https://example.test/original-page?one=1&amp;two=2"><img src="https://example.test/not-the-page.png">'], { type: "text/html" }) })
+      ]
+    } });
+  }, [...buffer]);
+  await page.locator("#paste-button").click();
+  await expect(page.locator(".source-link")).toHaveAttribute("href", "https://example.test/original-page?one=1&two=2");
+  await paste(page, ["open-graph.png"], buffer, '<meta property="og:url" content="https://example.test/og-page"><img src="https://example.test/picture.png">');
+  await expect(page.locator(".source-link").last()).toHaveAttribute("href", "https://example.test/og-page");
+  for (const url of ["javascript:alert(1)", "data:text/html,hello", "file:///C:/private/file.html", "https://user:password@example.test/page"]) {
+    await paste(page, [`unsafe-${url.split(":")[0]}.png`], buffer, `SourceURL:${url}\r\n<link rel="canonical" href="${url}"><script>window.clipboardExecuted=true</script>`);
+  }
+  await expect(page.locator(".image-card")).toHaveCount(6);
+  await expect(page.locator(".source-missing")).toHaveCount(4);
+  expect(await page.evaluate(() => window.clipboardExecuted)).toBeUndefined();
+  const saved = await snapshot(page);
+  expect(saved.state.tabs[0].sections[0].items.slice(2).every((item) => item.sourceUrl === "")).toBe(true);
+});
+
+test("source URLs survive duplication, JSON transfer, offline portable HTML, and legacy backups", async ({ page, browser }, testInfo) => {
+  await ready(page); const buffer = await png(page);
+  const url = "https://example.test/original-page";
+  await paste(page, ["source.png"], buffer, `SourceURL:${url}\r\n<img src="https://example.test/photo.png">`);
+  await expect(page.locator(".source-link")).toHaveAttribute("href", url);
+  await editTab(page);
+  await page.getByRole("button", { name: "Duplicate tab", exact: true }).click();
+  await expect(page.locator(".source-link")).toHaveAttribute("href", url);
+  const htmlEvent = page.waitForEvent("download"); await page.locator("#save-portable").click();
+  const htmlDownload = await htmlEvent, htmlPath = testInfo.outputPath("source-portable.html"); await htmlDownload.saveAs(htmlPath);
+  const offline = await browser.newContext({ offline: true }); const offlinePage = await offline.newPage();
+  await offlinePage.goto(pathToFileURL(htmlPath).href);
+  await expect(offlinePage.locator(".source-link")).toHaveAttribute("href", url);
+  await offline.close();
+  await page.locator("#more").click();
+  const jsonEvent = page.waitForEvent("download"); await page.getByRole("button", { name: "Export JSON backup", exact: true }).click();
+  const jsonDownload = await jsonEvent, jsonPath = testInfo.outputPath("source-backup.json"); await jsonDownload.saveAs(jsonPath);
+  const backup = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+  expect(backup.state.tabs.every((tab) => tab.sections[0].items[0].sourceUrl === url)).toBe(true);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#backup-file").setInputFiles(jsonPath);
+  await expect(page.locator("#editor")).not.toBeVisible();
+  await expect(page.locator(".source-link")).toHaveAttribute("href", url);
+  for (const tab of backup.state.tabs) for (const section of tab.sections) for (const item of section.items) delete item.sourceUrl;
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#backup-file").setInputFiles({ name: "legacy.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+  await expect(page.locator(".source-missing")).toHaveText("No source URL available");
+  await expect(page.locator(".image-card")).toHaveCount(1);
+  const saved = await snapshot(page);
+  expect(Buffer.from(saved.assets[0][1].bytes).equals(buffer)).toBe(true);
+});
+
+test("each card has Move, Delete, More controls and deletion requires confirmation", async ({ page }) => {
+  await ready(page); await upload(page, ["keep.png", "remove.png"], await png(page));
+  const tools = page.locator(".image-card").last().locator(".card-tools");
+  expect(await tools.locator("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label")))).toEqual(["Drag remove.png", "Delete image remove.png", "Edit image remove.png"]);
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Delete image remove.png", exact: true }).click();
+  await expect(page.locator(".image-card")).toHaveCount(2);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete image remove.png", exact: true }).click();
+  await expect.poll(() => titles(page)).toEqual(["keep.png"]);
+  await page.locator("#edit-toggle").click();
+  await expect(page.getByRole("button", { name: "Delete image keep.png", exact: true })).toBeHidden();
+  await page.reload();
+  await expect.poll(() => titles(page)).toEqual(["keep.png"]);
+  expect((await snapshot(page)).assets).toHaveLength(1);
+});
+
+test("hidden intro keeps uploads available and pencil edit toggle shares the layout row", async ({ page }) => {
+  await ready(page);
+  await expect(page.locator("section.intro")).toBeHidden();
+  await expect(page.locator("#edit-toggle")).toHaveText("✎");
+  await expect(page.getByRole("button", { name: "Turn editing off", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add images", exact: true })).toBeVisible();
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    const layout = await page.locator(".view-switch").boundingBox(), pencil = await page.locator("#edit-toggle").boundingBox();
+    expect(Math.abs((layout.y + layout.height / 2) - (pencil.y + pencil.height / 2))).toBeLessThan(2);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+  await page.locator("#edit-toggle").click();
+  await expect(page.getByRole("button", { name: "Turn editing on", exact: true })).toBeVisible();
+  await expect(page.locator("#paste-toolbar")).toBeHidden();
+  await page.locator("#edit-toggle").click();
+  const chooserEvent = page.waitForEvent("filechooser"); await page.getByRole("button", { name: "Add images", exact: true }).click();
+  const chooser = await chooserEvent;
+  await chooser.setFiles(file("still-uploadable.png", await png(page)));
+  await expect(page.locator(".image-card")).toHaveCount(1);
+});
+
+test("tabs edit on double-click, F2, or touch hold without the board-heading block", async ({ page, browser }) => {
+  await ready(page);
+  await expect(page.locator(".board-heading")).toHaveCount(0);
+  await page.locator("#new-tab").click();
+  await page.locator("#editor [name=name]").fill("Second tab"); await saveDialog(page);
+  await page.locator(".tab").first().dblclick();
+  await expect(page.locator("#editor [name=name]")).toHaveValue("My inspiration");
+  await page.locator("#editor [name=name]").fill("Renamed first"); await saveDialog(page);
+  await expect(tabTitle(page)).toHaveText("Renamed first");
+  await page.locator(".tab").last().focus(); await page.keyboard.press("F2");
+  await expect(page.locator("#editor [name=name]")).toHaveValue("Second tab");
+  await page.locator("#editor [name=name]").fill("Keyboard tab"); await saveDialog(page);
+  await page.locator("#edit-toggle").click();
+  await page.locator(".tab").first().dblclick();
+  await expect(page.locator("#editor")).not.toBeVisible();
+  await expect(tabTitle(page)).toHaveText("Renamed first");
+  const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const mobilePage = await mobile.newPage(); await mobilePage.goto("http://127.0.0.1:8085/");
+  await expect(mobilePage.locator("#save-status")).toHaveText("Saved on this device");
+  const tab = await mobilePage.locator(".tab").boundingBox(), cdp = await mobile.newCDPSession(mobilePage);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: tab.x + 20, y: tab.y + 20 }] });
+  await mobilePage.waitForTimeout(600);
+  await expect(mobilePage.locator("#editor")).toBeVisible();
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await mobilePage.locator("#editor [name=name]").fill("Touch tab"); await saveDialog(mobilePage);
+  await expect(tabTitle(mobilePage)).toHaveText("Touch tab");
+  await mobile.close();
 });
