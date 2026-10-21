@@ -6,5 +6,11 @@
 #notice{pointer-events:none}.guide-heading{font-size:13px;font-weight:600;margin:23px 0 6px}
 button,a{touch-action:manipulation}#viewer-stage{touch-action:none}#viewer-stage.actual{touch-action:auto}
 .images[data-layout=masonry] .tile{display:block}
+.card-caption{display:none}
+main{max-width:none;padding-inline:clamp(12px,2vw,32px)}.app-header,footer{padding-inline:clamp(12px,2vw,32px)}
+.images[data-layout=masonry]{columns:auto;display:block}.images[data-layout=masonry] .tile{position:absolute;margin-bottom:0}
+.images[data-layout=grid]{grid-template-columns:repeat(auto-fit,minmax(min(var(--tile-size),100%),1fr))}
+.select-image{opacity:0}.image-card:hover .select-image,.image-card:focus-within .select-image,.image-card.selected .select-image{opacity:1}
+@media(hover:none){.select-image{opacity:1}}
 @media(max-width:600px){.app-header{flex-wrap:wrap;gap:6px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}

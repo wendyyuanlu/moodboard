@@ -11,6 +11,8 @@
   let queue = Promise.resolve(), pending = 0, memoryOnly = false, dirty = false;
   let noticeTimer, viewItems = [], viewIndex = 0, internalClipboard = [];
   let suppressClickUntil = 0, gesture = null, dragFrame = 0, selectedTarget = null;
+  let masonryFrame = 0;
+  const masonryObserver = new ResizeObserver(() => scheduleMasonry());
   let channel;
   const supportedImage = /^image\/(png|jpeg|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)$/i;
 
@@ -212,6 +214,7 @@
     $("#board-title").textContent = current.name;
     const count = tabItems().length;
     $("#image-count").textContent = `${count} ${count === 1 ? "image" : "images"}`;
+    masonryObserver.disconnect();
     $("#sections").replaceChildren(...current.sections.map(renderSection));
     if (!current.sections.length) {
       const empty = el("div", "empty-section");
@@ -219,6 +222,33 @@
       $("#sections").append(empty);
     }
     renderCursor(); renderSelection(); setSaveStatus();
+    masonryObserver.observe($("#sections"));
+    for (const card of $$(".image-card")) masonryObserver.observe(card);
+    scheduleMasonry();
+  }
+  function scheduleMasonry() {
+    cancelAnimationFrame(masonryFrame);
+    masonryFrame = requestAnimationFrame(layoutMasonry);
+  }
+  function layoutMasonry() {
+    if (!state) return;
+    const gap = innerWidth <= 600 ? 10 : 18;
+    for (const container of $$(".images[data-layout=masonry]")) {
+      const tiles = [...container.children], width = container.clientWidth;
+      if (!width || !tiles.length) { container.style.height = "0px"; continue; }
+      const preferredSize = Number($("#zoom").value);
+      const columns = Math.min(tiles.length, Math.max(1, Math.floor((width + gap) / (preferredSize + gap))));
+      const tileWidth = (width - gap * (columns - 1)) / columns;
+      const heights = Array(columns).fill(0);
+      for (const tile of tiles) tile.style.width = `${tileWidth}px`;
+      for (const tile of tiles) {
+        const column = heights.indexOf(Math.min(...heights));
+        tile.style.left = `${column * (tileWidth + gap)}px`;
+        tile.style.top = `${heights[column]}px`;
+        heights[column] += tile.getBoundingClientRect().height + (editable ? 0 : gap);
+      }
+      container.style.height = `${Math.max(...heights) - (editable ? 0 : gap)}px`;
+    }
   }
   function slot(sectionId, beforeId, label, className = "insert-slot") {
     const control = button("", () => { if (editable) setCursor(sectionId, beforeId); }, className);
@@ -885,6 +915,7 @@
   for (const control of $$("button[data-layout]")) control.addEventListener("click", () => mutate((next) => { next.settings.layout = control.dataset.layout; }));
   $("#zoom").addEventListener("input", (event) => {
     document.documentElement.style.setProperty("--tile-size", `${event.target.value}px`);
+    scheduleMasonry();
   });
   $("#zoom").addEventListener("change", (event) => {
     const zoom = Number(event.target.value); mutate((next) => { next.settings.zoom = zoom; });

@@ -59,6 +59,9 @@ test("rapid paste positions, original bytes, full-size viewer and portable offli
   const buffer = await png(page, 1920, 1080);
   await upload(page, ["A.png", "B.png"], buffer);
   await expect(page.locator(".image-card")).toHaveCount(2);
+  await expect(page.locator(".card-caption").first()).toBeHidden();
+  await expect(page.locator(".card-caption h3").first()).toHaveText("A.png");
+  await expect(page.locator(".card-meta").first()).toContainText("1920 × 1080");
   await page.getByRole("button", { name: "Paste before B.png", exact: true }).click();
   await paste(page, ["C.png", "D.png"], buffer);
   await paste(page, ["E.png"], buffer);
@@ -409,4 +412,31 @@ test("portable export works without local storage and failed saves leave the boa
   await expect.poll(() => titles(page)).toEqual(["safe.png"]);
   await page.reload();
   await expect.poll(() => titles(page)).toEqual(["safe.png"]);
+});
+
+test("hover-only desktop checkboxes and masonry fill horizontally across the entire board", async ({ page }) => {
+  await ready(page);
+  const landscape = await png(page, 400, 200), portrait = await png(page, 200, 400);
+  await page.locator("#image-files").setInputFiles([file("one.png", landscape), file("two.png", portrait), file("three.png", landscape), file("four.png", portrait)]);
+  await expect(page.locator(".image-card")).toHaveCount(4);
+  await expect(page.locator("#save-status")).toHaveText("Saved on this device");
+  await page.mouse.move(0, 0);
+  const first = page.locator(".image-card").first(), check = first.locator(".select-image");
+  await expect(check).toHaveCSS("opacity", "0");
+  await first.hover(); await expect(check).toHaveCSS("opacity", "1");
+  await check.check(); await page.mouse.move(0, 0);
+  await expect(check).toHaveCSS("opacity", "1");
+  await expect(page.locator(".image-card").nth(1).locator(".select-image")).toHaveCSS("opacity", "0");
+  await expect.poll(async () => page.locator(".images").evaluate((container) => {
+    const bounds = container.getBoundingClientRect();
+    const cards = [...container.querySelectorAll(".image-card")].map((card) => card.getBoundingClientRect());
+    return Math.abs(cards.at(-1).right - bounds.right) < 2 && cards.every((card) => Math.abs(card.top - cards[0].top) < 2);
+  })).toBe(true);
+  await page.locator("#zoom").evaluate((slider) => {
+    slider.value = "420"; slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect.poll(() => page.locator(".image-card").evaluateAll((cards) => new Set(cards.map((card) => Math.round(card.getBoundingClientRect().x))).size)).toBe(2);
+  await page.locator("#zoom").evaluate((slider) => slider.dispatchEvent(new Event("change", { bubbles: true })));
+  await expect.poll(async () => (await snapshot(page)).state.settings.zoom).toBe(420);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
