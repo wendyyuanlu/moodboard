@@ -94,6 +94,7 @@ async function sharedHarness(browser, fixture) {
 async function authenticateShared(page) {
   await page.locator("#more").click();
   await page.getByRole("button", { name: "Enable auto-sync", exact: true }).click();
+  await expect(page.locator("[name=githubToken]")).toHaveAttribute("placeholder", "PUT IT HERE NAO");
   await page.locator("[name=githubToken]").fill("test-only-token"); await saveDialog(page);
   await expect(page.locator("#save-status")).toHaveText("Saved to GitHub");
 }
@@ -122,6 +123,7 @@ test("empty sections use a large working paste target and Add section spans the 
   await newSection(page, "Paste destination");
   await page.getByRole("button", { name: "Paste at end of Paste destination", exact: true }).click();
   await expect(page.locator(".empty-section .section-end.chosen")).toHaveCount(1);
+  expect(await page.locator(".empty-section .section-end.chosen").evaluate(node => getComputedStyle(node, "::after").content)).toBe("none");
   await paste(page, ["added-here.png"], await png(page));
   await expect(page.locator(".section").last().locator(".image-card")).toHaveCount(1);
   await expect(page.locator(".section").last().locator(".empty-section")).toHaveCount(0);
@@ -1097,6 +1099,29 @@ test("header controls are compact and Manage precedes captions without the remov
 
 test("local menu keeps GitHub controls visible but disabled, with offline backups still available", async ({ page, context }) => {
   await ready(page); await page.locator("#more").click();
+  const info = page.getByRole("button", { name: "About management buttons", exact: true });
+  await expect(info).toHaveAttribute("aria-expanded", "false");
+  await expect(info).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#manage-help")).toHaveCount(0);
+  for (const description of await page.locator(".button-description").all()) await expect(description).toBeHidden();
+  await info.click();
+  await expect(info).toHaveAttribute("aria-expanded", "true");
+  await expect(info).toHaveAttribute("aria-pressed", "true");
+  await expect(info.locator("svg circle")).not.toHaveCSS("fill", "none");
+  for (const description of await page.locator(".button-description").all()) await expect(description).toBeVisible();
+  expect(await page.locator(".manage-action > .button").evaluateAll(nodes => nodes.every(node => node.nextElementSibling.id === node.getAttribute("aria-describedby")))).toBe(true);
+  await expect(page.locator(".github-login + .button-description")).toContainText("Signing in there does not enable auto-sync");
+  await expect(page.getByRole("button", { name: "Replace local with Github version", exact: true }).locator("..").locator(".button-description")).toContainText("Pending local edits are discarded");
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+  const icon = await info.locator("svg").boundingBox(); expect(icon.width).toBe(20); expect(icon.height).toBe(20);
+  await info.focus(); await page.keyboard.press("Enter");
+  await expect(info).toHaveAttribute("aria-expanded", "false");
+  await expect(info).toHaveAttribute("aria-pressed", "false");
+  await expect(info.locator("svg circle")).toHaveCSS("fill", "none");
+  for (const description of await page.locator(".button-description").all()) await expect(description).toBeHidden();
   await expect(page.locator(".github-action")).toHaveCount(5);
   for (const action of await page.locator(".github-action").all()) {
     await expect(action).toBeVisible(); await expect(action).toBeDisabled();
@@ -1104,6 +1129,7 @@ test("local menu keeps GitHub controls visible but disabled, with offline backup
   }
   await expect(page.getByRole("link", { name: "Login", exact: true })).toHaveAttribute("aria-disabled", "false");
   await context.setOffline(true);
+  await info.click(); for (const description of await page.locator(".button-description").all()) await expect(description).toBeVisible();
   await expect(page.getByRole("link", { name: "Login", exact: true })).toHaveAttribute("aria-disabled", "true");
   for (const name of ["Export JSON backup", "Import JSON backup", "Offline & portability guide"]) {
     await expect(page.getByRole("button", { name, exact: true })).toBeEnabled();
@@ -1111,6 +1137,52 @@ test("local menu keeps GitHub controls visible but disabled, with offline backup
   await context.setOffline(false);
   await expect(page.getByRole("link", { name: "Login", exact: true })).toHaveAttribute("aria-disabled", "false");
   for (const action of await page.locator(".github-action").all()) await expect(action).toBeDisabled();
+  await expect(page.locator("#coupon-code")).toHaveValue("l33thelper");
+  await expect(page.locator("#copy-coupon")).toBeEnabled();
+  expect(await page.locator(".coupon-code").evaluate(node => node.nextElementSibling.classList.contains("destructive-actions"))).toBe(true);
+});
+
+test("public coupon is copyable offline while actual GitHub credentials stay out of storage and exports", async ({ page, browser }, testInfo) => {
+  const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
+  try {
+    const client = await shared.open({ authenticated: true });
+    await client.page.evaluate(() => Object.defineProperty(navigator, "clipboard", {
+      configurable: true, value: { writeText: async value => { globalThis.copiedTestToken = value; } }
+    }));
+    await client.page.locator("#more").click();
+    const token = client.page.locator("#coupon-code"), copy = client.page.locator("#copy-coupon");
+    await expect(token).toHaveAttribute("type", "text");
+    await expect(token).toHaveAttribute("readonly", "");
+    await expect(token).toHaveValue("l33thelper");
+    expect(await token.getAttribute("name")).toBeNull();
+    expect(await client.page.evaluate(() => new FormData(document.querySelector("#editor-form")).has("coupon"))).toBe(false);
+    await copy.click();
+    expect(await client.page.evaluate(() => globalThis.copiedTestToken)).toBe("l33thelper");
+    await client.context.setOffline(true);
+    await expect(copy).toBeEnabled();
+    await client.context.setOffline(false);
+    const jsonEvent = client.page.waitForEvent("download");
+    await client.page.getByRole("button", { name: "Export JSON backup", exact: true }).click();
+    const jsonPath = testInfo.outputPath("no-token.json"); await (await jsonEvent).saveAs(jsonPath);
+    expect(fs.readFileSync(jsonPath, "utf8")).not.toContain("test-only-token");
+    const htmlEvent = client.page.waitForEvent("download");
+    await client.page.locator("#save-portable").evaluate(node => node.click());
+    const htmlPath = testInfo.outputPath("no-token.html"); await (await htmlEvent).saveAs(htmlPath);
+    expect(fs.readFileSync(htmlPath, "utf8")).not.toContain("test-only-token");
+    expect(JSON.stringify(await snapshot(client.page))).not.toContain("test-only-token");
+    expect(await client.page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain("test-only-token");
+    await client.page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error("Clipboard denied"); }; });
+    await copy.click(); await expect(client.page.locator("#notice")).toContainText("Could not copy the coupon");
+    await client.page.getByRole("button", { name: "Disconnect GitHub", exact: true, includeHidden: true }).evaluate(node => node.click());
+    await client.page.locator("#more").click();
+    await expect(token).toHaveValue("l33thelper"); await expect(copy).toBeEnabled();
+    await client.page.locator("#cancel-editor").click();
+    await authenticateShared(client.page); await client.page.reload();
+    await expect(client.page.locator("#save-status")).toHaveText("Saved to GitHub");
+    await client.page.locator("#more").click();
+    await expect(token).toHaveValue("l33thelper"); await expect(copy).toBeEnabled();
+    const icon = await copy.locator("svg").boundingBox(); expect(icon.width).toBe(20); expect(icon.height).toBe(20);
+  } finally { await shared.close(); }
 });
 
 test("GitHub login is first when disconnected and hidden after connecting", async ({ page, browser }) => {
@@ -1119,7 +1191,8 @@ test("GitHub login is first when disconnected and hidden after connecting", asyn
     const client = await shared.open();
     await client.page.locator("#more").click();
     await expect(client.page.locator(".manage-actions > :first-child").getByRole("link", { name: "Login", exact: true })).toHaveAttribute("href", "https://github.com/login");
-    expect(await client.page.locator(".manage-actions > :first-child > *").allTextContents()).toEqual(["Login", "Enable auto-sync"]);
+    expect(await client.page.locator(".manage-actions > :first-child .button:not([hidden])").allTextContents()).toEqual(["Login", "Enable auto-sync"]);
+    const disabledWidth = (await client.page.locator(".enable-auto-sync").boundingBox()).width;
     await expect(client.page.locator(".enable-auto-sync .sync-check")).toHaveCount(0);
     for (const action of await client.page.locator(".github-action").all()) await expect(action).toBeEnabled();
     await client.context.setOffline(true);
@@ -1129,26 +1202,56 @@ test("GitHub login is first when disconnected and hidden after connecting", asyn
     await expect(client.page.getByRole("link", { name: "Login", exact: true })).toHaveAttribute("aria-disabled", "true");
     await client.context.setOffline(false);
     for (const action of await client.page.locator(".github-action").all()) await expect(action).toBeEnabled();
-    await expect(client.page.locator(".manage-actions > :nth-child(2)")).toHaveText("Force re-sync");
-    await expect(client.page.locator(".manage-actions > :nth-child(3)")).toHaveText("Merge local with Github version");
-    await expect(client.page.locator(".manage-actions > :last-child")).toHaveText("Offline & portability guide");
-    expect(await client.page.locator(".manage-actions > :nth-last-child(2) button").allTextContents()).toEqual(["Export JSON backup", "Import JSON backup"]);
+    await expect(client.page.locator(".manage-actions > :nth-child(2) button")).toHaveText("Force re-sync");
+    await expect(client.page.locator(".manage-actions > :nth-last-child(2) button")).toHaveText("Merge local with Github version");
+    await expect(client.page.locator(".manage-actions > :last-child button")).toHaveText("Offline & portability guide");
+    await expect(client.page.locator(".manage-actions > :nth-last-child(3) button")).toHaveText("Protect browser storage");
+    expect(await client.page.locator(".manage-actions > :nth-last-child(4) button").allTextContents()).toEqual(["Export JSON backup", "Import JSON backup"]);
     expect(await client.page.locator(".destructive-actions button").allTextContents()).toEqual(["Replace Github with local version", "Replace local with Github version"]);
     await client.page.locator("#cancel-editor").click();
     await authenticateShared(client.page);
     await client.page.locator("#more").click();
     await expect(client.page.getByRole("link", { name: "Login", exact: true })).toHaveCount(0);
     await expect(client.page.locator(".enable-auto-sync .sync-check")).toHaveText("✓");
-    await expect(client.page.getByRole("button", { name: "Disconnect GitHub", exact: true })).toBeVisible();
-    await client.page.getByRole("button", { name: "Disconnect GitHub", exact: true }).click();
+    expect((await client.page.locator(".enable-auto-sync").boundingBox()).width).toBe(disabledWidth);
+    const disconnect = client.page.getByRole("button", { name: "Disconnect GitHub", exact: true, includeHidden: true });
+    await expect(disconnect).toBeHidden();
+    await disconnect.evaluate(node => node.click());
     await client.page.locator("#more").click();
     await expect(client.page.getByRole("link", { name: "Login", exact: true })).toBeVisible();
     await expect(client.page.locator(".enable-auto-sync .sync-check")).toHaveCount(0);
   } finally { await shared.close(); }
 });
 
+test("last successful GitHub sync shows a local date and time, persists, and does not advance for offline edits", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
+  try {
+    const client = await shared.open({ authenticated: true });
+    await client.page.locator("#more").click();
+    const stamp = await client.page.locator("#last-sync time").getAttribute("datetime");
+    expect(Number.isFinite(Date.parse(stamp))).toBe(true);
+    expect(await client.page.locator("#last-sync time").evaluate(node => node.textContent === new Date(node.dateTime).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" }))).toBe(true);
+    await client.page.locator("#cancel-editor").click();
+    await client.context.setOffline(true);
+    await paste(client.page, ["pending-offline.png"], fixture.bytes);
+    await expect(client.page.locator(".image-card")).toHaveCount(2);
+    await client.page.reload(); await expect(client.page.locator(".image-card")).toHaveCount(2);
+    await client.page.locator("#more").click();
+    await expect(client.page.locator("#last-sync time")).toHaveAttribute("datetime", stamp);
+    await client.page.locator("#cancel-editor").click();
+    await client.context.setOffline(false);
+    await expect(client.page.locator("#save-status")).toHaveText("Saved here · Enable auto-sync");
+    await authenticateShared(client.page);
+    await client.page.locator("#more").click();
+    const saved = await client.page.locator("#last-sync time").getAttribute("datetime");
+    expect(Date.parse(saved)).toBeGreaterThan(Date.parse(stamp));
+    await expect(client.page.locator("#manage-conflict")).toBeHidden();
+  } finally { await shared.close(); }
+});
+
 test("delete-warning allowance counts ten actions, not ten images, and cancellation never grants a skip", async ({ page }) => {
   await ready(page); await upload(page, Array.from({ length: 24 }, (_, index) => `delete-${index}.png`), await png(page, 120, 160));
+  await expect(page.locator("#delete-warning .hint")).toHaveCount(0);
   const removeFirst = async () => {
     await page.locator(".image-card").first().evaluate(card => card.scrollIntoView({ block: "center" }));
     await page.locator(".image-card").first().getByRole("button", { name: /^Delete image/ }).click();
@@ -1345,6 +1448,9 @@ test("simultaneous public edits report conflicts without overwriting, and mergin
     expect(shared.record.board.state.tabs.flatMap((tab) => tab.sections.flatMap((section) => section.items.map((item) => item.title)))).toEqual(["shared-original.png", "online-A.png"]);
     expect(await titles(b.page)).toEqual(["shared-original.png", "offline-B.png"]);
     await b.page.locator("#more").click();
+    await expect(b.page.locator("#manage-conflict")).toHaveText("A newer shared version conflicts with this device. Export a backup, then choose how to resolve it.");
+    await expect(b.page.locator("#manage-conflict")).toBeVisible();
+    await expect(b.page.locator(".settings-manage > :nth-child(2)")).toHaveAttribute("id", "manage-conflict");
     await b.page.getByRole("button", { name: "Merge local with Github version", exact: true }).click();
     await expect(b.page.locator("#editor")).not.toBeVisible();
     await expect(b.page.locator("#save-status")).toHaveText("Saved to GitHub");

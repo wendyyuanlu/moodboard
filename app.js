@@ -20,7 +20,9 @@
   const cloudConfig = JSON.parse($("#cloud-config").textContent);
   const cloudEnabled = Boolean(cloudConfig && location.protocol !== "file:" && location.origin === new URL(cloudConfig.site).origin && location.pathname.startsWith(new URL(cloudConfig.site).pathname));
   const github = cloudEnabled ? MoodboardGitHub.createGitHubStore(cloudConfig) : null;
-  let cloudInfo = { collection: cloudConfig?.collection, revision: null, dirty: false };
+  const couponCode = "l33thelper";
+  let showManageHelp = false;
+  let cloudInfo = { collection: cloudConfig?.collection, revision: null, dirty: false, lastSyncedAt: null };
   let cloudReady = false, cloudSaving = false, cloudConflict = false, cloudError = "", cloudTimer, lastCloudRead = 0;
 
   function el(tag, className, text) {
@@ -150,6 +152,7 @@
     }
     syncText($("#save-status"), pending ? "Saving…" : status);
     $("#save-portable").disabled = pending > 0 || !state || Boolean(cloudEnabled && !cloudReady && !cloudInfo.revision && !allItems().length);
+    updateGitHubControls();
   }
   function syncText(node, text) {
     const label = "Enable auto-sync";
@@ -167,6 +170,18 @@
     updateGitHubControls();
   }
   function updateGitHubControls() {
+    const conflict = $("#manage-conflict"), lastSync = $("#last-sync");
+    if (conflict) conflict.hidden = !cloudConflict;
+    if (lastSync) {
+      lastSync.replaceChildren(document.createTextNode("Last sync: "));
+      if (cloudEnabled && cloudInfo.lastSyncedAt) {
+        const date = new Date(cloudInfo.lastSyncedAt);
+        const time = el("time", "", date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" }));
+        time.dateTime = date.toISOString(); lastSync.append(time);
+      } else lastSync.append(document.createTextNode("Not synced on this device"));
+    }
+    const copyCoupon = $("#copy-coupon");
+    if (copyCoupon) copyCoupon.disabled = !couponCode || $("#editor-submit").disabled;
     const unavailable = !navigator.onLine ? "Reconnect to the internet to use GitHub."
       : !cloudEnabled ? "GitHub sync is available on the published website. Local and portable copies save on this device." : "";
     for (const control of $$(".github-action")) {
@@ -1150,7 +1165,7 @@
     }
     validate(next, nextAssets);
     const existing = db ? await readDB("boards", next.id) : null;
-    const info = { collection: cloudConfig.collection, revision: record.revision, dirty: merge };
+    const info = { collection: cloudConfig.collection, revision: record.revision, dirty: merge, lastSyncedAt: merge ? cloudInfo.lastSyncedAt ?? null : Date.now() };
     await persist(next, nextAssets, next.id === state.id ? state.revision : existing?.state.revision ?? -1, info);
     for (const url of urls.values()) URL.revokeObjectURL(url);
     urls.clear(); state = next; assets = nextAssets; cloudInfo = info;
@@ -1188,6 +1203,7 @@
             } else if (cloudInfo.revision !== record.revision || state.id !== record.board.state.id) await installShared(record);
           }
           cloudReady = true; cloudError = "";
+          if (!cloudInfo.dirty) { cloudInfo.lastSyncedAt = Date.now(); await saveCloudMeta(); }
         });
         if (deferred) { scheduleCloud(1500); return; }
       }
@@ -1199,6 +1215,7 @@
         await enqueue(async () => {
           cloudInfo.revision = saved.revision;
           cloudInfo.dirty = state.id !== sentId || state.revision !== sentRevision;
+          cloudInfo.lastSyncedAt = Date.now();
           await saveCloudMeta();
         });
       }
@@ -1245,6 +1262,7 @@
     setup.target = "_blank"; setup.rel = "noopener noreferrer"; setup.textContent = "Open GitHub sign-in and token setup";
     $("#editor-fields").append(setup);
     const input = field("Repository-scoped GitHub token", "githubToken", "", "password");
+    input.placeholder = "PUT IT HERE NAO";
     input.required = true; input.autocomplete = "off"; input.spellcheck = false;
     hint("The token is kept only in this open tab and sent only to api.github.com. It is never stored in a backup, portable HTML, browser storage, or your repository. Reconnect after reloading if you want to upload more edits; public browsing needs no token.");
   }
@@ -1321,50 +1339,96 @@
     editor.classList.add("settings-editor");
     $("#editor-title").hidden = true;
     const manage = el("section", "settings-manage"), actions = el("div", "dialog-extra manage-actions");
-    manage.append(el("h3", "guide-heading", "Manage"), actions); $("#editor-fields").append(manage);
+    const heading = el("div", "manage-heading"), descriptions = [];
+    const info = button("", () => {
+      showManageHelp = !showManageHelp;
+      for (const description of $$(".button-description", manage)) description.hidden = !showManageHelp;
+      info.setAttribute("aria-pressed", String(showManageHelp));
+      info.setAttribute("aria-expanded", String(showManageHelp));
+    }, "icon-button manage-info");
+    info.setAttribute("aria-label", "About management buttons"); info.title = "About management buttons";
+    info.setAttribute("aria-pressed", String(showManageHelp)); info.setAttribute("aria-expanded", String(showManageHelp));
+    setIcon(info, '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>');
+    heading.append(el("h3", "guide-heading", "Manage"), info);
+    const conflict = el("p", "error", "A newer shared version conflicts with this device. Export a backup, then choose how to resolve it.");
+    conflict.id = "manage-conflict"; conflict.setAttribute("role", "alert"); conflict.hidden = true;
+    const lastSync = el("p", "hint"); lastSync.id = "last-sync";
+    lastSync.title = "Last successful GitHub read or upload on this device, shown in local time.";
+    manage.append(heading, conflict, lastSync, actions); $("#editor-fields").append(manage);
+    const action = (label, handler, description, className = "button") => {
+      const control = button(label, handler, className);
+      descriptions.push({ control, description }); return control;
+    };
     {
       const connection = el("div", "manage-row");
       if (!github?.connected) {
         const login = el("a", "button github-login", "Login");
+        descriptions.push({ control: login, description: "Opens GitHub sign-in in another tab. Signing in there does not enable auto-sync by itself." });
         login.addEventListener("click", (event) => { if (!navigator.onLine) event.preventDefault(); });
         login.href = "https://github.com/login"; login.target = "_blank"; login.rel = "noopener noreferrer"; connection.append(login);
       }
-      const enable = button("Enable auto-sync", connectGitHub, "button github-action enable-auto-sync");
+      const enable = action("Enable auto-sync", connectGitHub, "Authorize this tab to upload edits automatically using a repository-scoped token. The token stays only in this open tab; enable again after reloading.", "button github-action enable-auto-sync");
       if (github?.connected) {
         const check = el("span", "sync-check", "✓"); check.setAttribute("aria-hidden", "true"); enable.append(check);
         enable.title = "Auto-sync is enabled for this tab";
       }
       connection.append(enable);
-      if (github?.connected) connection.append(button("Disconnect GitHub", () => { github.disconnect(); editor.close(); setSaveStatus(); }, "button"));
+      if (github?.connected) {
+        const disconnect = button("Disconnect GitHub", () => { github.disconnect(); editor.close(); setSaveStatus(); }, "button");
+        disconnect.hidden = true; connection.append(disconnect);
+      }
       actions.append(connection,
-        button("Force re-sync", () => { editor.close(); scheduleCloud(0); }, "button github-action"),
-        button("Merge local with Github version", () => resolveShared("merge"), "button github-action"));
+        action("Force re-sync", () => { editor.close(); scheduleCloud(0); }, "Recheck GitHub and retry queued uploads. Uploading requires enabled auto-sync; failed uploads stay saved on this device.", "button github-action"));
     }
-    if (navigator.storage?.persist) actions.append(button("Protect browser storage", async () => {
+    const backups = el("div", "manage-row");
+    backups.append(action("Export JSON backup", exportJSON, "Download a complete backup with every original image, tab, section, source URL, and crop. Keep it somewhere outside browser storage."),
+      action("Import JSON backup", () => $("#backup-file").click(), "Restore a backup after confirming replacement of this open collection. On the hosted site, the imported version also queues a replacement of the shared board; export your current board first."));
+    actions.append(backups);
+    if (navigator.storage?.persist) actions.append(action("Protect browser storage", async () => {
       try {
         const granted = await navigator.storage.persist();
         notify(granted ? "Persistent storage granted. Still keep a portable backup." : "Your browser did not grant persistent storage. Export backups regularly.");
       } catch (error) { report(error); }
-    }, "button"));
-    const backups = el("div", "manage-row");
-    backups.append(button("Export JSON backup", exportJSON, "button"), button("Import JSON backup", () => $("#backup-file").click(), "button"));
-    actions.append(backups, button("Offline & portability guide", guide, "button"));
+    }, "Ask the browser not to automatically evict this app's storage. This is not a backup and does not prevent manual deletion or device loss."));
+    actions.append(
+      action("Merge local with Github version", () => resolveShared("merge"), "Combine this device's board with GitHub without discarding either version. It may create duplicate placements to organize. Uploading the result requires enabled auto-sync.", "button github-action"),
+      action("Offline & portability guide", guide, "Open instructions for offline browsing, portable HTML, phone use, backups, and bringing offline changes back."));
     {
       const destructive = el("div", "destructive-actions");
       destructive.append(el("h4", "guide-heading", "Destructive actions"),
-        button("Replace Github with local version", () => resolveShared("replace"), "button danger github-action"),
-        button("Replace local with Github version", () => resolveShared("load"), "button danger github-action"));
+        action("Replace Github with local version", () => resolveShared("replace"), "Queue this device's board to replace the public GitHub board, potentially removing other people's edits. Confirmation and enabled auto-sync are required to publish; export a backup first.", "button danger github-action"),
+        action("Replace local with Github version", () => resolveShared("load"), "Replace this device's board with the GitHub version. Pending local edits are discarded after confirmation; export a backup first.", "button danger github-action"));
       manage.append(destructive);
       const sharing = el("p", "hint");
       syncText(sharing, cloudEnabled ? "Anyone can view. Enable auto-sync with repository write access to upload edits automatically. Originals and organization are saved to the board branch; deletions remain in Git history. Offline edits wait on this device. No separate server or tunnel is required."
         : "GitHub sync is available on the published website. Local and portable copies save only on this device; import their JSON backup on the hosted site to bring edits back.");
       manage.append(sharing);
       const status = el("p", "hint");
-      syncText(status, cloudConflict ? "A newer shared version conflicts with this device. Export a backup, then choose how to resolve it." : $("#save-status").textContent);
+      syncText(status, $("#save-status").textContent);
       manage.append(status);
     }
     const total = [...assets.values()].reduce((sum, asset) => sum + asset.blob.size, 0);
     manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)}. Local autosave is not a backup; export a copy regularly.`));
+    const couponSection = el("div", "coupon-code");
+    const couponInput = field("Coupon code", "coupon", couponCode);
+    couponInput.id = "coupon-code"; couponInput.removeAttribute("name"); couponInput.readOnly = true;
+    const copyCoupon = action("Copy coupon", async () => {
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error("Clipboard writing is unavailable in this browser.");
+        await navigator.clipboard.writeText(couponCode);
+        notify("Coupon copied.");
+      } catch (error) { report(new Error("Could not copy the coupon. Allow clipboard access in this browser and try again.", { cause: error })); }
+    }, "Copy the public coupon code to your clipboard, including offline. This is not a GitHub credential and does not enable auto-sync.", "button icon-button");
+    copyCoupon.id = "copy-coupon";
+    copyCoupon.setAttribute("aria-label", "Copy coupon"); copyCoupon.title = "Copy coupon";
+    setIcon(copyCoupon, '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/>');
+    couponSection.append(couponInput.closest(".field"), copyCoupon); manage.insertBefore(couponSection, manage.querySelector(".destructive-actions"));
+    descriptions.forEach(({ control, description }, index) => {
+      const wrapper = el("div", "manage-action"), text = el("p", "button-description", description);
+      text.id = `manage-help-${index}`; text.hidden = !showManageHelp;
+      control.setAttribute("aria-describedby", text.id); control.before(wrapper); wrapper.append(control, text);
+    });
+    info.setAttribute("aria-controls", descriptions.map((_, index) => `manage-help-${index}`).join(" "));
     for (const [key, label, fallback] of [["showCaptions", "Caption", false], ["showFilenames", "Show filenames", false], ["showUrls", "Show URLs", true]]) {
       const input = field(label, key, "on", "checkbox");
       input.checked = state.settings[key] ?? fallback; input.setAttribute("role", "switch"); input.closest(".field").classList.add("caption-toggle");
