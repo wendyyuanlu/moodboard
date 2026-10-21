@@ -2173,12 +2173,17 @@ test("lightbox has square icon controls and links to every other section sharing
     expect(await page.locator("#viewer-zoom svg").innerHTML()).not.toBe(expand);
     const sizes = await page.locator("#viewer .viewer-button:visible").evaluateAll(buttons => buttons.map(button => { const rect = button.getBoundingClientRect(); return [rect.width, rect.height]; }));
     expect(sizes.every(([width, height]) => width === 40 && height === 40)).toBe(true);
-    await expect(page.locator("#viewer-locations")).not.toHaveAttribute("open");
-    await page.locator("#viewer-locations-summary").click();
-    await expect(page.locator(".viewer-location")).toHaveText(["My inspiration / Also here", "Elsewhere / Far away"]);
+    await expect(page.locator("#viewer-locations")).not.toBeVisible();
+    await expect(page.locator("#viewer-locations-toggle")).toHaveAttribute("aria-expanded", "false");
+    expect(await page.locator("#viewer-locations-toggle").evaluate(node => node.nextElementSibling.id)).toBe("viewer-download");
+    await page.locator("#viewer-locations-toggle").click();
+    await expect(page.locator("#viewer-locations-toggle")).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator(".viewer-location")).toHaveText(["My inspiration > Also here", "Elsewhere > Far away"]);
+    const fontRatio = await page.locator(".viewer-location").first().evaluate(node => parseFloat(getComputedStyle(node).fontSize) / parseFloat(getComputedStyle(node.parentElement).fontSize));
+    expect(fontRatio).toBeCloseTo(0.7, 2);
     if (width === 1000) await page.locator("#viewer-close").click();
   }
-  await page.getByRole("button", { name: "Elsewhere / Far away", exact: true }).click();
+  await page.getByRole("button", { name: "Elsewhere > Far away", exact: true }).click();
   await expect(page.locator("#viewer")).not.toBeVisible(); await expect(tabTitle(page)).toHaveText("Elsewhere");
   await expect(page.locator(".section")).not.toHaveClass(/collapsed/);
   expect((await snapshot(page)).state.tabs[1].sections[0].collapsed).toBe(false);
@@ -2196,6 +2201,7 @@ test("save status uses available header width without wrapping or pushing contro
         return { whitespace: style.whiteSpace, maxWidth: style.maxWidth, height: rect.height, lineHeight: parseFloat(style.lineHeight), width: rect.width, scrollWidth: node.scrollWidth };
       });
       expect(metrics.whitespace).toBe("nowrap"); expect(metrics.maxWidth).toBe("none");
+      expect(await device.page.locator("#save-status").evaluate(node => getComputedStyle(node).flexGrow)).toBe("1");
       expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight + 1);
       if (width >= 800) { expect(metrics.width).toBeGreaterThan(110); expect(metrics.width + 1).toBeGreaterThanOrEqual(metrics.scrollWidth); }
       const right = await device.page.locator("#save-portable").evaluate(node => node.getBoundingClientRect().right);
@@ -2312,6 +2318,170 @@ test("selected export failures keep the chooser open and never download a partia
     await expect(reader.locator("#editor")).toBeVisible();
     expect(downloads).toBe(0); expect((await snapshot(reader)).state).toEqual(before);
   } finally { await context.close(); await shared.close(); }
+});
+
+test("batch original ZIP exports preserve bytes, safe names and selection deduplication for file transfer", async ({ page, browser }, testInfo) => {
+  await ready(page);
+  const first = await png(page), second = await png(page, 90, 150, "#123456"), third = await png(page, 240, 60, "#aa3344");
+  await page.locator("#image-files").setInputFiles([file("same.png", first), file("same.png", second), file("你好.png", third)]);
+  await expect(page.locator(".image-card")).toHaveCount(3);
+  const saved = await snapshot(page), state = saved.state;
+  state.tabs[0].sections[0].items.push({ ...state.tabs[0].sections[0].items[0], id: "extra-placement", crop: { x: 0, y: 0, width: 0.5, height: 0.5 } });
+  saved.assets[2][1].name = "../你好.png";
+  const records = saved.assets.map(([id, asset]) => [id, { name: asset.name, width: asset.width, height: asset.height, data: `data:image/png;base64,${Buffer.from(asset.bytes).toString("base64")}` }]);
+  const lines = [{ format: "moodboard-lines", version: 1, state, assetCount: 3 }, ...records].map(record => JSON.stringify(record)).join("\n");
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator("#backup-file").setInputFiles({ name: "zip-fixture.jsonl", mimeType: "application/x-ndjson", buffer: Buffer.from(lines) });
+  await expect(page.locator(".image-card")).toHaveCount(4);
+  await page.locator(".select-section").check();
+  const before = await snapshot(page), event = page.waitForEvent("download");
+  await page.locator("#download-selected").click();
+  const download = await event, output = testInfo.outputPath("originals.zip"); await download.saveAs(output);
+  const bytes = fs.readFileSync(output), extracted = [];
+  let offset = 0;
+  while (bytes.readUInt32LE(offset) === 0x04034b50) {
+    expect(bytes.readUInt16LE(offset + 8)).toBe(0);
+    expect(bytes.readUInt16LE(offset + 6) & 0x800).toBe(0x800);
+    const size = bytes.readUInt32LE(offset + 18), nameLength = bytes.readUInt16LE(offset + 26), extra = bytes.readUInt16LE(offset + 28);
+    const name = bytes.subarray(offset + 30, offset + 30 + nameLength).toString("utf8"), start = offset + 30 + nameLength + extra;
+    const data = bytes.subarray(start, start + size);
+    expect(require("node:zlib").crc32(data)).toBe(bytes.readUInt32LE(offset + 14));
+    extracted.push({ name, data }); offset = start + size;
+  }
+  expect(bytes.readUInt32LE(offset)).toBe(0x02014b50);
+  expect(bytes.readUInt16LE(bytes.length - 12)).toBe(3);
+  expect(extracted.map(record => record.name)).toEqual(["same.png", "same (2).png", ".._你好.png"]);
+  expect(extracted.map(record => record.data)).toEqual([first, second, third]);
+  expect(await snapshot(page)).toEqual(before);
+  const target = await browser.newContext(), destination = await target.newPage();
+  try {
+    await ready(destination);
+    await destination.locator("#image-files").setInputFiles(extracted.map(record => file(record.name, record.data)));
+    await expect(destination.locator(".image-card")).toHaveCount(3);
+    expect((await snapshot(destination)).assets.map(([, asset]) => Buffer.from(asset.bytes))).toEqual([first, second, third]);
+  } finally { await target.close(); }
+  await page.locator("#clear-selection").click();
+  await page.locator(".select-image").first().check();
+  const singleEvent = page.waitForEvent("download"); await page.locator("#download-selected").click();
+  const singlePath = testInfo.outputPath("single.zip"); await (await singleEvent).saveAs(singlePath);
+  const single = fs.readFileSync(singlePath);
+  expect(single.readUInt16LE(single.length - 12)).toBe(1);
+});
+
+test("memory-only portable isolation never touches browser storage and survives saved copies", async ({ page, browser }, testInfo) => {
+  await ready(page); const bytes = await png(page); await upload(page, ["isolated.png"], bytes);
+  const saved = await snapshot(page), original = saved.assets[0][1];
+  const payload = { format: "moodboard", version: 1, state: saved.state, assets: [[saved.assets[0][0], {
+    name: original.name, width: original.width, height: original.height, data: `data:image/png;base64,${bytes.toString("base64")}`
+  }]] };
+  const source = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8")
+    .replace(/(<script id="portable-data" type="application\/json">)[\s\S]*?(<\/script>)/, (_, open, close) => open + JSON.stringify(payload) + close)
+    .replace(/(<script id="portable-options" type="application\/json">)[\s\S]*?(<\/script>)/, '$1{"memoryOnly":true}$2');
+  const context = await browser.newContext({ offline: true });
+  try {
+    await context.addInitScript(() => {
+      window.storageTouches = 0;
+      const forbidden = () => { window.storageTouches++; throw new Error("Isolated file touched browser storage."); };
+      Object.defineProperty(window, "indexedDB", { value: { open: forbidden } });
+      Object.defineProperty(window, "BroadcastChannel", { value: forbidden });
+      Object.defineProperty(navigator, "serviceWorker", { value: { register: forbidden } });
+    });
+    await context.route("http://127.0.0.1:8085/isolated.html", route => route.fulfill({ contentType: "text/html", body: source }));
+    const isolated = await context.newPage(); await isolated.goto("http://127.0.0.1:8085/isolated.html");
+    await expect(isolated.locator(".image-card")).toHaveCount(1);
+    await expect(isolated.locator("#storage-warning")).toContainText("does not use browser autosave");
+    await expect(isolated.locator("#connection-status")).toContainText("Memory-only portable");
+    await setSpacing(isolated, 29);
+    const event = isolated.waitForEvent("download"); await isolated.locator("#save-portable").click();
+    const output = testInfo.outputPath("memory-only-copy.html"); await (await event).saveAs(output);
+    expect(fs.readFileSync(output, "utf8")).toContain('<script id="portable-options" type="application/json">{"memoryOnly":true}</script>');
+    const copy = await context.newPage(); await copy.goto(pathToFileURL(output).href);
+    await expect(copy.locator(".image-card")).toHaveCount(1); await expect(copy.locator("#spacing")).toHaveValue("29");
+    expect(await copy.evaluate(() => window.storageTouches)).toBe(0);
+    expect(await isolated.evaluate(() => window.storageTouches)).toBe(0);
+    expect(await snapshot(page)).toEqual(saved);
+    await isolated.locator("#more").click();
+    await expect(isolated.getByRole("button", { name: "Protect browser storage", exact: true })).toHaveCount(0);
+    await expect(isolated.locator("#editor")).toContainText("in memory only");
+    await isolated.locator("#cancel-editor").click();
+    await isolated.locator("#export-selected").click();
+    await isolated.getByRole("checkbox", { name: "Select all tabs and sections", exact: true }).check();
+    const selectedEvent = isolated.waitForEvent("download"); await isolated.locator("#editor-submit").click();
+    const selectedPath = testInfo.outputPath("isolated-selection.html"); await (await selectedEvent).saveAs(selectedPath);
+    expect(fs.readFileSync(selectedPath, "utf8")).toContain('<script id="portable-options" type="application/json">{"memoryOnly":true}</script>');
+  } finally { await context.close(); }
+});
+
+test("failed batch original download reports the error without a partial ZIP", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page), shared = await sharedHarness(browser, fixture.board);
+  const context = await browser.newContext({ serviceWorkers: "block" });
+  try {
+    shared.corruptOriginal(); await shared.connect(context);
+    const reader = await context.newPage(); await reader.goto("http://127.0.0.1:8085/");
+    await expect(reader.locator("#notice")).toContainText("integrity check");
+    await reader.locator(".select-image").check();
+    let downloads = 0; reader.on("download", () => downloads++);
+    await reader.locator("#download-selected").click();
+    await expect(reader.locator("#notice")).toContainText("integrity check");
+    await expect(reader.locator("#download-selected")).toBeEnabled();
+    expect(downloads).toBe(0);
+  } finally { await context.close(); await shared.close(); }
+});
+
+test.describe("portable storage recovery", () => {
+test.use({ serviceWorkers: "block" });
+test("portable files recover from staging, read and final-save storage failures without touching the existing board", async ({ page, context }, testInfo) => {
+  await ready(page); const bytes = await png(page); await upload(page, ["existing.png"], bytes);
+  const before = await snapshot(page), original = before.assets[0][1], state = structuredClone(before.state);
+  state.id = "recovery-board";
+  const payload = { format: "moodboard", version: 1, state, assets: [[before.assets[0][0], {
+    name: original.name, width: original.width, height: original.height, data: `data:image/png;base64,${bytes.toString("base64")}`
+  }]] };
+  const source = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8")
+    .replace(/(<script id="portable-data" type="application\/json">)[\s\S]*?(<\/script>)/, (_, open, close) => open + JSON.stringify(payload) + close)
+    .replace(/(<script id="cloud-config" type="application\/json">)[\s\S]*?(<\/script>)/, "$1null$2");
+  for (const failure of ["stage", "read", "final-save"]) {
+    const reader = await context.newPage();
+    await reader.addInitScript(failure => {
+      const get = IDBObjectStore.prototype.get, put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.get = function(key) {
+        if (failure === "read" && key === "recovery-board") throw new DOMException("Device read unavailable.", "UnknownError");
+        return get.call(this, key);
+      };
+      IDBObjectStore.prototype.put = function(value, key) {
+        if (failure === "stage" && value.blob instanceof Blob || failure === "final-save" && key === "recovery-board") {
+          throw new DOMException("Device storage is full.", "QuotaExceededError");
+        }
+        return put.call(this, value, key);
+      };
+    }, failure);
+    await reader.route(`http://127.0.0.1:8085/recovery-${failure}.html`, route => route.fulfill({ contentType: "text/html", body: source }));
+    await reader.goto(`http://127.0.0.1:8085/recovery-${failure}.html`);
+    await expect(reader.locator(".image-card")).toHaveCount(1);
+    await expect(reader.locator("#storage-warning")).toContainText("Browser autosave failed");
+    await expect(reader.locator("#storage-warning")).toContainText("Newer browser-only edits may not be included");
+    await setSpacing(reader, 31);
+    const event = reader.waitForEvent("download"); await reader.locator("#save-portable").click();
+    const output = testInfo.outputPath(`recovered-${failure}.html`); await (await event).saveAs(output);
+    const html = fs.readFileSync(output, "utf8");
+    expect(html).toContain('<script id="portable-options" type="application/json">{"memoryOnly":true}</script>');
+    expect(Buffer.from(portablePayload(html).assets[0][1].data.split(",")[1], "base64")).toEqual(bytes);
+    expect(await snapshot(page)).toEqual(before);
+    await reader.close();
+  }
+});
+});
+
+test("memory-only export checkbox produces independent files without browser autosave", async ({ page }, testInfo) => {
+  await ready(page); await upload(page, ["travel.png"], await png(page));
+  await page.locator("#export-selected").click();
+  await page.getByRole("checkbox", { name: "Select all tabs and sections", exact: true }).check();
+  const choice = page.getByRole("checkbox", { name: "Memory-only file (no browser autosave)", exact: true });
+  await expect(choice).not.toBeChecked(); await choice.check();
+  const event = page.waitForEvent("download"); await page.locator("#editor-submit").click();
+  const output = testInfo.outputPath("travel-memory.html"); await (await event).saveAs(output);
+  expect(fs.readFileSync(output, "utf8")).toContain('<script id="portable-options" type="application/json">{"memoryOnly":true}</script>');
+  await expect(page.locator("#save-status")).toHaveText("Saved on this device");
 });
 
 test("competing edits to the same notes still protect both versions with a real conflict", async ({ page, browser }) => {

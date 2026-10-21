@@ -17,8 +17,9 @@
   const masonryObserver = new ResizeObserver(() => scheduleMasonry());
   let channel;
   const { supportedImage, sourcePageURL, validCrop, validate } = MoodboardFormat;
+  let isolatedPortable = JSON.parse($("#portable-options").textContent)?.memoryOnly === true;
   const cloudConfig = JSON.parse($("#cloud-config").textContent);
-  const cloudEnabled = Boolean(cloudConfig && location.protocol !== "file:" && location.origin === new URL(cloudConfig.site).origin && location.pathname.startsWith(new URL(cloudConfig.site).pathname));
+  const cloudEnabled = Boolean(!isolatedPortable && cloudConfig && location.protocol !== "file:" && location.origin === new URL(cloudConfig.site).origin && location.pathname.startsWith(new URL(cloudConfig.site).pathname));
   const github = cloudEnabled ? MoodboardGitHub.createGitHubStore(cloudConfig) : null;
   const couponCode = "l33thelper";
   let showManageHelp = false;
@@ -245,6 +246,7 @@
     syncText($("#save-status"), pending ? "Saving…" : status);
     $("#save-portable").disabled = exporting || pending > 0 || !state || Boolean(cloudEnabled && !cloudReady && !cloudInfo.revision && !allItems().length);
     $("#export-selected").disabled = $("#save-portable").disabled;
+    $("#download-selected").disabled = exporting || pending > 0;
     updateGitHubControls();
   }
   function syncText(node, text) {
@@ -1215,11 +1217,12 @@
     $("#viewer-next").disabled = viewIndex === viewItems.length - 1;
     $("#viewer-stage").scrollTo(0, 0);
     const locations = $("#viewer-locations-list"), currentSection = sections().find(section => section.items.some(entry => entry.id === item.id));
-    locations.replaceChildren(); $("#viewer-locations").open = false;
+    locations.replaceChildren(); $("#viewer-locations").hidden = true;
+    $("#viewer-locations-toggle").setAttribute("aria-expanded", "false");
     for (const tab of state.tabs) for (const section of tab.sections) {
       if (section.id === currentSection?.id || !section.items.some(entry => entry.assetId === item.assetId ||
         asset.remote?.sha && assets.get(entry.assetId)?.remote?.sha === asset.remote.sha)) continue;
-      const link = button(`${tab.name} / ${section.name}`, () => {
+      const link = button(`${tab.name} > ${section.name}`, () => {
         viewer.close();
         enqueue(() => commit(next => {
           next.activeTab = tab.id; findSection(section.id, next).collapsed = false;
@@ -1230,8 +1233,8 @@
       }, "viewer-location");
       locations.append(link);
     }
-    $("#viewer-locations").hidden = !locations.children.length;
-    $("#viewer-locations-summary").textContent = `Other sections (${locations.children.length})`;
+    $("#viewer-locations-toggle").hidden = !locations.children.length;
+    $("#viewer-locations-toggle").title = `Other sections (${locations.children.length})`;
   }
   function updateViewerZoom(actual) {
     const label = actual ? "Fit image" : "Actual size", control = $("#viewer-zoom");
@@ -1256,6 +1259,10 @@
   $("#viewer-prev").addEventListener("click", () => stepViewer(-1));
   $("#viewer-next").addEventListener("click", () => stepViewer(1));
   $("#viewer-close").addEventListener("click", () => viewer.close());
+  $("#viewer-locations-toggle").addEventListener("click", () => {
+    const panel = $("#viewer-locations"), toggle = $("#viewer-locations-toggle");
+    panel.hidden = !panel.hidden; toggle.setAttribute("aria-expanded", String(!panel.hidden));
+  });
   setIcon($("#viewer-source"), globeIcon);
   $("#viewer-download").addEventListener("click", async event => {
     event.preventDefault();
@@ -1537,7 +1544,7 @@
         if (originalReadbackFailed) throw new Error("Could not reopen staged originals. Reload before importing again; the active board has not been replaced.");
       },
       async cleanup() {
-        if (memoryOnly) return;
+        if (!saved && !db) return;
         try {
           await storageTransaction("boards", "readwrite", tx => {
             const store = tx.objectStore("boards");
@@ -1550,18 +1557,30 @@
       }
     };
   }
-  async function unpackBoard(data, shared = false) {
+  async function unpackBoard(data, shared = false, portable = false) {
     if (!data || data.format !== "moodboard" || data.version !== 1 || !Array.isArray(data.assets)) throw new Error("Choose a valid moodboard JSON backup.");
     const result = new Map(), staging = shared ? null : originalStaging(result);
     try {
       for (const entry of data.assets) {
         const bytes = await unpackAsset(entry, result, shared);
-        await staging?.flush(false, bytes);
+        if (portable) await stagePortable(staging, false, bytes);
+        else await staging?.flush(false, bytes);
       }
       validate(data.state, result);
-      await staging?.flush(true);
+      if (portable) await stagePortable(staging, true);
+      else await staging?.flush(true);
       return { state: data.state, assets: result, cleanup: staging?.cleanup };
     } catch (error) { await staging?.cleanup(); throw error; }
+  }
+  function recoverPortable(error) {
+    console.error("Portable browser storage failed; using embedded originals:", error);
+    memoryOnly = true; isolatedPortable = true;
+    warning("Browser autosave failed. Using the photos embedded in this file, without browser storage. Newer browser-only edits may not be included; stored boards were not replaced. Save a NEW portable copy before closing to keep changes.");
+  }
+  async function stagePortable(staging, force, bytes = 0) {
+    if (memoryOnly) return;
+    try { await staging.flush(force, bytes); }
+    catch (error) { recoverPortable(error); }
   }
   async function unpackAsset(entry, result, shared = false) {
     if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || result.has(entry[0])) throw new Error("The backup contains invalid or duplicate image records.");
@@ -1796,11 +1815,68 @@
     link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
+  async function downloadSelectedOriginals() {
+    if (exporting) { notify("An export is already being prepared. Wait for its download before starting another."); return; }
+    const wanted = new Set(tabItems().filter(item => selection.has(item.id)).map(item => item.assetId));
+    for (const section of activeTab().sections) if (sectionSelection.has(section.id)) for (const item of section.items) wanted.add(item.assetId);
+    if (!wanted.size) { notify("Select images or nonempty sections to download their originals."); return; }
+    if (wanted.size > 65535) { report(new Error("Select fewer than 65,536 originals for one ZIP download.")); return; }
+    const originals = new Map([...wanted].map(id => [id, assets.get(id)]));
+    exporting = true; setSaveStatus();
+    try {
+      const parts = [], directory = [], encoder = new TextEncoder(), names = new Set();
+      let offset = 0;
+      const header = length => {
+        const bytes = new Uint8Array(length), view = new DataView(bytes.buffer);
+        return { bytes, short: (at, value) => view.setUint16(at, value, true), long: (at, value) => view.setUint32(at, value, true) };
+      };
+      const table = Uint32Array.from({ length: 256 }, (_, value) => {
+        for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ value >>> 1 : value >>> 1;
+        return value >>> 0;
+      });
+      for (const [id, asset] of originals) {
+        const { blob } = await ensureOriginal(id, asset);
+        if (blob.size > 0xffffffff || offset + blob.size + 100000 > 0xffffffff) throw new Error("This selection exceeds the 4 GB ZIP limit. Download fewer originals at a time.");
+        let name = asset.name.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/g, "").slice(0, 200) || "original";
+        if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = "_" + name;
+        const base = name, dot = base.lastIndexOf("."), stem = dot > 0 ? base.slice(0, dot) : base, extension = dot > 0 ? base.slice(dot) : "";
+        let suffix = 1;
+        while (names.has(name.toLowerCase())) name = `${stem} (${++suffix})${extension}`;
+        names.add(name.toLowerCase());
+        const filename = encoder.encode(name);
+        let crc = 0xffffffff;
+        const reader = blob.stream().getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            for (const byte of value) crc = table[(crc ^ byte) & 255] ^ crc >>> 8;
+          }
+        } finally { reader.releaseLock(); }
+        crc = (crc ^ 0xffffffff) >>> 0;
+        const local = header(30), central = header(46);
+        local.long(0, 0x04034b50); local.short(4, 20); local.short(6, 0x800); local.short(12, 33);
+        local.long(14, crc); local.long(18, blob.size); local.long(22, blob.size); local.short(26, filename.length);
+        central.long(0, 0x02014b50); central.short(4, 20); central.short(6, 20); central.short(8, 0x800); central.short(14, 33);
+        central.long(16, crc); central.long(20, blob.size); central.long(24, blob.size); central.short(28, filename.length); central.long(42, offset);
+        parts.push(local.bytes, filename, blob); directory.push(central.bytes, filename);
+        offset += local.bytes.length + filename.length + blob.size;
+      }
+      const directorySize = directory.reduce((size, part) => size + part.length, 0);
+      if (offset + directorySize + 22 > 0xffffffff) throw new Error("This selection exceeds the 4 GB ZIP limit. Download fewer originals at a time.");
+      const end = header(22);
+      end.long(0, 0x06054b50); end.short(8, originals.size); end.short(10, originals.size); end.long(12, directorySize); end.long(16, offset);
+      download(new Blob([...parts, ...directory, end.bytes], { type: "application/zip" }), `moodboard-originals-${new Date().toISOString().slice(0, 10)}.zip`);
+      notify(`${originals.size} original files downloaded. Extract the ZIP, then drop the images into your other moodboard. Files are not resized; new imports use that board's storage.`);
+    } catch (error) { report(error); }
+    finally { exporting = false; setSaveStatus(); }
+  }
   function openExport() {
     const groups = [];
+    let avoidStorage;
     const selected = () => new Map(groups.filter(group => group.master.checked || group.master.indeterminate)
       .map(group => [group.id, new Set(group.sections.filter(section => section.input.checked).map(section => section.id))]));
-    openEditor("Export tabs and sections", () => exportPortable(selected(), true));
+    openEditor("Export tabs and sections", () => exportPortable(selected(), true, avoidStorage.input.checked));
     editorSuccess = "Selected content exported as a separate HTML file. Your full board is unchanged.";
     $("#editor-submit").textContent = "Export HTML";
     const container = el("div", "export-choices"), summary = el("p", "export-summary");
@@ -1852,11 +1928,14 @@
       }
       update();
     });
-    $("#editor-fields").append(all.node, container, summary);
+    avoidStorage = choice("Memory-only file (no browser autosave)", "Memory-only file (no browser autosave)");
+    avoidStorage.input.checked = isolatedPortable || memoryOnly;
+    $("#editor-fields").append(all.node, container, summary, avoidStorage.node);
     hint("Only selected sections and their full original images are included. The exported file is an independent board; it does not replace this one.");
+    hint("Memory-only files avoid the browser image database, but still need RAM. Save a new HTML copy after editing; changes are not autosaved.");
     update();
   }
-  async function exportPortable(selected, throwErrors = false) {
+  async function exportPortable(selected, throwErrors = false, avoidStorage = isolatedPortable || memoryOnly) {
     if (!state) return;
     if (exporting) { notify("An export is already being prepared. Wait for its download before starting another."); return; }
     exporting = true; setSaveStatus();
@@ -1872,6 +1951,7 @@
       const marker = "<!--MOODBOARD_PORTABLE_ORIGINALS-->";
       find("#portable-data").after(document.createComment("MOODBOARD_PORTABLE_ORIGINALS"));
       find("#cloud-config").textContent = "null";
+      find("#portable-options").textContent = avoidStorage ? '{"memoryOnly":true}' : "null";
       find("#board-header").classList.remove("shy-hidden");
       find(".app-header").classList.remove("shy-hidden");
       find("#editor-form").append(find(".dialog-footer"));
@@ -1881,7 +1961,8 @@
       find("#viewer-image").removeAttribute("src");
       find("#viewer-original").removeAttribute("href"); find("#viewer-download").removeAttribute("href");
       find("#viewer-source").removeAttribute("href"); find("#viewer-source").hidden = true;
-      find("#viewer-locations-list").replaceChildren(); find("#viewer-locations").hidden = true; find("#viewer-locations").removeAttribute("open");
+      find("#viewer-locations-list").replaceChildren(); find("#viewer-locations").hidden = true;
+      find("#viewer-locations-toggle").hidden = true; find("#viewer-locations-toggle").setAttribute("aria-expanded", "false");
       find("#save-portable").removeAttribute("disabled"); find("#save-portable").textContent = "↓ Save portable copy";
       find("#save-status").textContent = "Opening your space…";
       html.querySelector("body").classList.remove("edit-off", "dragging");
@@ -1995,7 +2076,7 @@
     backups.append(action("Export JSON backup", exportJSON, "Download a complete backup with every original image, tab, section, source URL, and crop. Keep it somewhere outside browser storage."),
       action("Import JSON backup", () => $("#backup-file").click(), "Restore a backup after confirming replacement of this open collection. On the hosted site, the imported version also queues a replacement of the shared board; export your current board first."));
     actions.append(backups);
-    if (navigator.storage?.persist) actions.append(action("Protect browser storage", async () => {
+    if (!isolatedPortable && navigator.storage?.persist) actions.append(action("Protect browser storage", async () => {
       try {
         const granted = await navigator.storage.persist();
         notify(granted ? "Persistent storage granted. Still keep a portable backup." : "Your browser did not grant persistent storage. Export backups regularly.");
@@ -2012,14 +2093,15 @@
       manage.append(destructive);
       const sharing = el("p", "hint");
       syncText(sharing, cloudEnabled ? "Anyone can view. Enable auto-sync with repository write access to upload edits automatically. Originals and organization are saved to the board branch; deletions remain in Git history. Offline edits wait on this device. No separate server or tunnel is required."
-        : "GitHub sync is available on the published website. Local and portable copies save only on this device; import their JSON backup on the hosted site to bring edits back.");
+        : isolatedPortable ? "This file never saves images or edits to browser storage and never syncs with GitHub. Save a new portable copy to keep changes."
+          : "GitHub sync is available on the published website. Local and portable copies save only on this device; import their JSON backup on the hosted site to bring edits back.");
       manage.append(sharing);
       const status = el("p", "hint");
       syncText(status, $("#save-status").textContent);
       manage.append(status);
     }
     const total = [...assets.values()].reduce((sum, asset) => sum + (asset.blob?.size || 0), 0);
-    manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)} cached on this device. Local autosave is not a backup; export a copy regularly.`));
+    manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)} ${isolatedPortable ? "in memory only. No local autosave; save a new portable copy to keep edits." : "cached on this device. Local autosave is not a backup; export a copy regularly."}`));
     const couponSection = el("div", "coupon-code");
     const couponInput = field("Coupon code", "coupon", state.settings.couponCode ?? couponCode);
     couponInput.id = "coupon-code"; couponInput.removeAttribute("name"); couponInput.maxLength = 500;
@@ -2114,6 +2196,7 @@
   $("#cancel-editor").addEventListener("click", () => editor.close());
   $("#save-portable").addEventListener("click", () => exportPortable());
   $("#export-selected").addEventListener("click", openExport);
+  $("#download-selected").addEventListener("click", downloadSelectedOriginals);
   $("#more").addEventListener("click", () => { if (state) settings(); });
   $("#help").addEventListener("click", guide);
   $("#new-tab").addEventListener("click", () => openTab());
@@ -2204,6 +2287,7 @@
     if (pending || exporting || (memoryOnly && dirty)) { event.preventDefault(); event.returnValue = ""; }
   });
   async function setupOffline() {
+    if (isolatedPortable) { $("#connection-status").textContent = "Memory-only portable · no browser image cache · save a new copy after editing"; return; }
     const hosted = location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname);
     if (!hosted || !("serviceWorker" in navigator)) {
       $("#connection-status").textContent = location.protocol === "file:" ? "Portable · no network needed" : "Use portable export for offline access";
@@ -2223,10 +2307,15 @@
     $("#export-selected").disabled = true;
     let cleanupEmbedded;
     try {
-      try { await storageDB(); }
-      catch (error) {
-        memoryOnly = true; console.error(error);
-        warning("Local autosave is unavailable in this browser/file location. You can still work, but MUST Save portable copy before closing.");
+      if (isolatedPortable) {
+        memoryOnly = true;
+        warning("This separate file does not use browser autosave or GitHub sync. Images and edits stay in memory. Save a new portable copy before closing to keep changes.");
+      } else {
+        try { await storageDB(); }
+        catch (error) {
+          memoryOnly = true; console.error(error);
+          warning("Local autosave is unavailable in this browser/file location. You can still work, but MUST Save portable copy before closing.");
+        }
       }
       let embedded = null;
       const payload = JSON.parse($("#portable-data").textContent);
@@ -2238,28 +2327,34 @@
           cleanupEmbedded = staging.cleanup;
           for (const chunk of chunks) {
             const entry = JSON.parse(chunk.textContent); chunk.textContent = ""; chunk.remove();
-            const bytes = await unpackAsset(entry, originals); await staging.flush(false, bytes);
+            const bytes = await unpackAsset(entry, originals); await stagePortable(staging, false, bytes);
           }
-          await staging.flush(true);
+          await stagePortable(staging, true);
           validate(payload.state, originals); embedded = { state: payload.state, assets: originals };
-        } else { embedded = await unpackBoard(payload); cleanupEmbedded = embedded.cleanup; }
+        } else { embedded = await unpackBoard(payload, false, true); cleanupEmbedded = embedded.cleanup; }
         $("#portable-data").textContent = "null";
       }
-      let saved = null;
-      if (!memoryOnly) {
-        const savedId = embedded?.state.id || await readDB("meta", "active");
-        if (savedId) saved = await readDB("boards", savedId);
-      }
-      if (saved && (!embedded || saved.state.revision >= embedded.state.revision)) {
-        state = saved.state; assets = new Map(saved.assets);
-        validate(state, assets);
-      } else if (embedded) {
+      try {
+        let saved = null;
+        if (!memoryOnly) {
+          const savedId = embedded?.state.id || await readDB("meta", "active");
+          if (savedId) saved = await readDB("boards", savedId);
+        }
+        if (saved && (!embedded || saved.state.revision >= embedded.state.revision)) {
+          state = saved.state; assets = new Map(saved.assets);
+          validate(state, assets);
+        } else if (embedded) {
+          state = embedded.state; assets = embedded.assets;
+          await persist(state, assets, saved?.state.revision ?? -1);
+        } else {
+          state = initialState(); await persist(state, assets, -1);
+        }
+      } catch (error) {
+        if (!embedded) throw error;
+        recoverPortable(error);
         state = embedded.state; assets = embedded.assets;
-        await persist(state, assets, saved?.state.revision ?? -1);
-      } else {
-        state = initialState(); await persist(state, assets, -1);
       }
-      if ("BroadcastChannel" in window) {
+      if (!isolatedPortable && "BroadcastChannel" in window) {
         channel = new BroadcastChannel("moodboard-changes");
         channel.onmessage = (event) => {
           if (event.data.id === state.id && event.data.revision > state.revision) warning("This collection was updated in another window. Export a backup if needed, then reload before editing.");
