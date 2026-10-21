@@ -2049,3 +2049,30 @@ test("exports above 512 MiB open offline and streaming JSON Lines restores every
     for (const file of [portable, backup]) if (fs.existsSync(file)) fs.unlinkSync(file);
   }
 });
+
+test("background original decoding is serialized to bound phone pixel memory", async ({ page, browser }) => {
+  const fixture = await sharedFixture(page), item = fixture.board.state.tabs[0].sections[0].items[0];
+  for (let index = 0; index < 6; index++) {
+    fixture.board.assets.push([`extra-${index}`, { ...fixture.board.assets[0][1], name: `extra-${index}.png` }]);
+    fixture.board.state.tabs[0].sections[0].items.push({ ...item, id: `extra-item-${index}`, assetId: `extra-${index}` });
+  }
+  const shared = await sharedHarness(browser, fixture.board), context = await browser.newContext({ serviceWorkers: "block" });
+  try {
+    await context.addInitScript(() => {
+      const decode = window.createImageBitmap; window.decoding = 0; window.maxDecoding = 0;
+      window.createImageBitmap = async (...args) => {
+        window.decoding++; window.maxDecoding = Math.max(window.maxDecoding, window.decoding);
+        try { await new Promise(resolve => setTimeout(resolve, 60)); return await decode(...args); }
+        finally { window.decoding--; }
+      };
+    });
+    await shared.connect(context);
+    const reader = await context.newPage(); await reader.goto("http://127.0.0.1:8085/");
+    await expect(reader.locator("#save-status")).toHaveText("Saved to GitHub");
+    await expect.poll(async () => {
+      const record = await snapshot(reader);
+      return record?.assets.length === 7 && record.assets.every(([, asset]) => asset.bytes !== null);
+    }).toBe(true);
+    expect(await reader.evaluate(() => window.maxDecoding)).toBe(1);
+  } finally { await context.close(); await shared.close(); }
+});

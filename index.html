@@ -158,7 +158,7 @@ body.hide-add-images #add-images,body.hide-add-images .section-upload{display:no
 .tab-order-row.reordering .tab-order-handle{cursor:grabbing}
 </style>
 </head>
-<body>
+<body class="hide-add-images">
 <header class="app-header">
 <div class="header-start"><button id="more" class="icon-button" aria-label="Settings and backups"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18M3 12h18M3 19h18"/></svg></button><button id="add-images" class="icon-button edit-control toolbar-icon" aria-label="Add images" title="Add images"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H3v18h18V10M17 3h6M20 0v6M3 17l6-6 5 5 3-3 4 4"/><circle cx="8" cy="7" r="1"/></svg></button></div>
 <div class="header-actions"><span id="save-status" role="status">Opening your space…</span><button id="save-portable" class="button">↓ Save portable copy</button></div>
@@ -586,6 +586,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
   let cloudReady = false, cloudSaving = false, cloudConflict = false, cloudError = "", cloudTimer, lastCloudRead = 0;
   let shellReady = false, cachingOriginals = false, originalCacheError = "";
   const originalDownloads = new Map();
+  let originalDecoder = Promise.resolve();
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -1816,7 +1817,11 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
     const key = `${id}:${asset.remote.sha}`;
     if (!originalDownloads.has(key)) {
       originalDownloads.set(key, (async () => {
-        const blob = await github.readOriginal(asset.remote), decoded = await readImage(blob);
+        const blob = await github.readOriginal(asset.remote);
+        // Bound decoded-pixel memory on phones while network downloads stay concurrent.
+        const decoding = originalDecoder.then(() => readImage(blob));
+        originalDecoder = decoding.catch(() => {});
+        const decoded = await decoding;
         if (decoded.width !== asset.width || decoded.height !== asset.height) throw new Error(`The dimensions of “${asset.name}” do not match its shared original.`);
         return { ...asset, blob };
       })().finally(() => originalDownloads.delete(key)));
@@ -2249,7 +2254,7 @@ if (typeof module !== "undefined") module.exports = MoodboardGitHub;
       manage.append(status);
     }
     const total = [...assets.values()].reduce((sum, asset) => sum + (asset.blob?.size || 0), 0);
-    manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)}. Local autosave is not a backup; export a copy regularly.`));
+    manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)} cached on this device. Local autosave is not a backup; export a copy regularly.`));
     const couponSection = el("div", "coupon-code");
     const couponInput = field("Coupon code", "coupon", state.settings.couponCode ?? couponCode);
     couponInput.id = "coupon-code"; couponInput.removeAttribute("name"); couponInput.maxLength = 500;

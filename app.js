@@ -26,6 +26,7 @@
   let cloudReady = false, cloudSaving = false, cloudConflict = false, cloudError = "", cloudTimer, lastCloudRead = 0;
   let shellReady = false, cachingOriginals = false, originalCacheError = "";
   const originalDownloads = new Map();
+  let originalDecoder = Promise.resolve();
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -1256,7 +1257,11 @@
     const key = `${id}:${asset.remote.sha}`;
     if (!originalDownloads.has(key)) {
       originalDownloads.set(key, (async () => {
-        const blob = await github.readOriginal(asset.remote), decoded = await readImage(blob);
+        const blob = await github.readOriginal(asset.remote);
+        // Bound decoded-pixel memory on phones while network downloads stay concurrent.
+        const decoding = originalDecoder.then(() => readImage(blob));
+        originalDecoder = decoding.catch(() => {});
+        const decoded = await decoding;
         if (decoded.width !== asset.width || decoded.height !== asset.height) throw new Error(`The dimensions of “${asset.name}” do not match its shared original.`);
         return { ...asset, blob };
       })().finally(() => originalDownloads.delete(key)));
@@ -1689,7 +1694,7 @@
       manage.append(status);
     }
     const total = [...assets.values()].reduce((sum, asset) => sum + (asset.blob?.size || 0), 0);
-    manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)}. Local autosave is not a backup; export a copy regularly.`));
+    manage.append(el("p", "hint", `${allItems().length} image placements · ${assets.size} original files · ${sizeText(total)} cached on this device. Local autosave is not a backup; export a copy regularly.`));
     const couponSection = el("div", "coupon-code");
     const couponInput = field("Coupon code", "coupon", state.settings.couponCode ?? couponCode);
     couponInput.id = "coupon-code"; couponInput.removeAttribute("name"); couponInput.maxLength = 500;
