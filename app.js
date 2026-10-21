@@ -677,16 +677,32 @@
 
   async function readImage(file) {
     if (!supportedImage.test(file.type)) throw new Error(`“${file.name || "Image"}” is not a supported raster image. Use PNG, JPEG, GIF, WebP, AVIF, or BMP.`);
-    const url = URL.createObjectURL(file);
+    const record = (width, height) => {
+      if (!width || !height) throw new Error("The image has no readable dimensions.");
+      return { blob: file, name: (file.name || `pasted-${Date.now()}.${file.type.split("/")[1]}`).slice(0, 500), width, height };
+    };
     try {
-      const image = new Image();
-      image.src = url;
-      await image.decode();
-      if (!image.naturalWidth || !image.naturalHeight) throw new Error("The image has no readable dimensions.");
-      return { blob: file, name: (file.name || `pasted-${Date.now()}.${file.type.split("/")[1]}`).slice(0, 500), width: image.naturalWidth, height: image.naturalHeight };
+      if (typeof createImageBitmap === "function") {
+        let bitmap;
+        try { bitmap = await createImageBitmap(file); }
+        catch (error) {
+          if (!(error instanceof DOMException) || !["InvalidStateError", "NotSupportedError"].includes(error.name)) throw error;
+          console.info("Using the browser image decoder for this format.", error.name);
+        }
+        // Bitmap decoding does not wait for a visible document or a paint frame.
+        if (bitmap) {
+          try { return record(bitmap.width, bitmap.height); }
+          finally { bitmap.close(); }
+        }
+      }
+      const url = URL.createObjectURL(file);
+      try {
+        const image = new Image(); image.src = url; await image.decode();
+        return record(image.naturalWidth, image.naturalHeight);
+      } finally { URL.revokeObjectURL(url); }
     } catch (error) {
       throw new Error(`Could not read “${file.name || "pasted image"}”. Choose an image supported by this browser.`, { cause: error });
-    } finally { URL.revokeObjectURL(url); }
+    }
   }
   function addFiles(files, target = cursor && { ...cursor }, sourceUrls = []) {
     if (!editable) { notify("Turn Edit on to add images."); return; }

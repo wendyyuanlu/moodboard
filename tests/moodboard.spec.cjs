@@ -1087,3 +1087,24 @@ test("an incomplete first shared load cannot download a misleading partial porta
     await expect(reader.locator(".image-card")).toHaveCount(0);
   } finally { await context.close(); await shared.close(); }
 });
+
+test("original ingestion and shared caching do not wait for paint-time image decoding", async ({ page, browser }) => {
+  await page.addInitScript(() => {
+    window.paintDecoderCalls = 0;
+    Image.prototype.decode = () => { window.paintDecoderCalls++; return new Promise(() => {}); };
+  });
+  const fixture = await sharedFixture(page);
+  expect(await page.evaluate(() => window.paintDecoderCalls)).toBe(0);
+  const shared = await sharedHarness(browser, fixture.board), context = await browser.newContext({ serviceWorkers: "block" });
+  try {
+    await context.addInitScript(() => {
+      window.paintDecoderCalls = 0;
+      Image.prototype.decode = () => { window.paintDecoderCalls++; return new Promise(() => {}); };
+    });
+    await shared.connect(context); const reader = await context.newPage(); await reader.goto("http://127.0.0.1:8085/");
+    await expect(reader.locator("#save-status")).toHaveText("Saved to GitHub");
+    await expect(reader.locator(".image-card")).toHaveCount(1);
+    expect(await reader.evaluate(() => window.paintDecoderCalls)).toBe(0);
+    expect(Buffer.from((await snapshot(reader)).assets[0][1].bytes).equals(fixture.bytes)).toBe(true);
+  } finally { await context.close(); await shared.close(); }
+});
